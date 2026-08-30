@@ -4,32 +4,6 @@ This version is designed to be hosted **without any `schedules.json` file on the
 
 The website contains only the UI. Each friend receives `schedules.json` separately and chooses it on their own device the first time they open the site. The app saves a private copy in that browser using IndexedDB (with localStorage as a fallback). Future visits load that local copy automatically.
 
-## What gets hosted
-
-Upload this folder as-is:
-
-```text
-whos-free-web-local-data/
-├── index.html
-├── styles.css
-├── app.js
-├── manifest.webmanifest
-├── service-worker.js
-└── assets/
-```
-
-**Do not upload `schedules.json`.** There is intentionally no schedule JSON in this package.
-
-## What your friends do
-
-1. Open your hosted Who's Free? link.
-2. Tap/click **Choose schedules.json**.
-3. Pick the JSON file you sent them (from Downloads, Files, AirDrop, Messages, etc.).
-4. The app validates it and stores a copy only in that browser.
-5. On later visits, the stored copy loads automatically; they do not normally need to choose it again.
-
-They can use the **Schedules** button at the top at any time to replace the file or remove the local copy.
-
 ## Privacy model
 
 The app code never fetches `schedules.json`, never uploads the selected file, and never sends schedule contents to a backend. All schedule calculations happen in the browser.
@@ -60,9 +34,6 @@ http://localhost:8000
 
 Choose your `schedules.json` when prompted. Reload the page to confirm that the schedules load again without selecting the file.
 
-## Host it
-
-Because it is a static site, it can be hosted on GitHub Pages, Cloudflare Pages, Netlify, Vercel, or another static host. Upload only the files in this package.
 
 ## iPhone install
 
