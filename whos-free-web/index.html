@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#0A0F18">
+  <meta name="description" content="See who's free now and compare Marianopolis schedules. Schedule data stays on your device.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Who's Free?">
+  <title>Who's Free?</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand-copy">
+        <div class="brand-row">
+          <span class="brand-dot" aria-hidden="true"></span>
+          <h1>Who's Free?</h1>
+        </div>
+        <p>Find who's free now, or check any time during the week.</p>
+      </div>
+
+      <div class="header-actions">
+        <button id="scheduleDataButton" class="secondary-button header-data-button" type="button" title="Manage schedule data">Schedules</button>
+        <div class="theme-controls" aria-label="Appearance">
+          <button id="lightThemeButton" class="icon-button" type="button" aria-label="Use light theme" title="Light theme">☀</button>
+          <button id="darkThemeButton" class="icon-button" type="button" aria-label="Use dark theme" title="Dark theme">☾</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="control-bar panel" aria-label="Schedule controls">
+      <label class="live-control">
+        <input id="liveToggle" type="checkbox" checked>
+        <span>Use current time</span>
+      </label>
+
+      <label class="field-group">
+        <span>Day</span>
+        <select id="daySelect" aria-label="Day">
+          <option>Monday</option>
+          <option>Tuesday</option>
+          <option>Wednesday</option>
+          <option>Thursday</option>
+          <option>Friday</option>
+          <option>Saturday</option>
+          <option>Sunday</option>
+        </select>
+      </label>
+
+      <label class="field-group">
+        <span>Time</span>
+        <input id="timeInput" type="time" step="60" aria-label="Time">
+      </label>
+
+      <button id="refreshButton" class="primary-button" type="button">Refresh</button>
+    </section>
+
+    <main class="main-grid">
+      <section class="people-panel panel">
+        <div class="people-heading-row">
+          <h2 id="peopleHeading">Free now</h2>
+          <div class="people-actions">
+            <button id="viewToggleButton" class="secondary-button compact" type="button">Show everyone</button>
+            <span id="freeCount" class="count-badge">0 of 0 free</span>
+          </div>
+        </div>
+
+        <p id="statusLine" class="status-line" aria-live="polite">Checking this device for schedule data…</p>
+
+        <div id="peopleList" class="people-list" role="list" aria-label="People"></div>
+      </section>
+
+      <section id="detailPanel" class="detail-panel panel" aria-live="polite">
+        <div class="empty-detail">
+          <div class="empty-symbol" aria-hidden="true">◎</div>
+          <h2>Select someone</h2>
+          <p>See their day at a glance, including their class timeline.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <input id="scheduleFileInput" class="visually-hidden" type="file" accept=".json,.JSON,application/json">
+
+  <div id="scheduleModal" class="modal-backdrop" hidden>
+    <section class="schedule-modal panel" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
+      <div class="modal-header">
+        <div>
+          <h2 id="scheduleModalTitle">Schedule data</h2>
+          <p>Your schedule file is stored locally in this browser. It is never uploaded by this app.</p>
+        </div>
+        <button id="closeScheduleModal" class="modal-close" type="button" aria-label="Close">×</button>
+      </div>
+
+      <div id="scheduleStorageStatus" class="storage-status"></div>
+
+      <div class="modal-actions">
+        <button id="importSchedulesButton" class="primary-button" type="button">Choose schedules.json</button>
+        <button id="removeSchedulesButton" class="danger-button" type="button">Remove local copy</button>
+      </div>
+
+      <p class="privacy-footnote">If you clear this browser's website data, switch browsers, or use a different device, you'll need to choose the JSON file again.</p>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <template id="dataSetupTemplate">
+    <div class="data-setup">
+      <div class="data-setup-icon" aria-hidden="true">↥</div>
+      <h3 class="data-setup-title">Add your schedules</h3>
+      <p class="data-setup-message">Choose the <strong>schedules.json</strong> file you were sent. A private copy will be saved only in this browser.</p>
+      <button class="primary-button choose-schedules" type="button">Choose schedules.json</button>
+      <p class="local-only-note"><span aria-hidden="true">●</span> Nothing is uploaded to this website.</p>
+    </div>
+  </template>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
