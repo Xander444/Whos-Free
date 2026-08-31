@@ -1,7 +1,7 @@
 {
   "name": "Who's Free?",
   "short_name": "Who's Free?",
-  "description": "See who's free now and compare class schedules. Schedule data stays on your device.",
+  "description": "See who's free, add school schedule PDFs, and keep schedule data on your device.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
