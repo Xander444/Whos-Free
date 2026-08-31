@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; worker-src 'self' blob: https://cdn.jsdelivr.net; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#0A0F18">
   <meta name="description" content="See who's free now and compare Marianopolis schedules. Schedule data stays on your device.">
@@ -89,25 +89,50 @@
   </div>
 
   <input id="scheduleFileInput" class="visually-hidden" type="file" accept=".json,.JSON,application/json">
+  <input id="schedulePdfInput" class="visually-hidden" type="file" accept=".pdf,application/pdf" multiple>
 
   <div id="scheduleModal" class="modal-backdrop" hidden>
     <section class="schedule-modal panel" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
       <div class="modal-header">
         <div>
           <h2 id="scheduleModalTitle">Schedule data</h2>
-          <p>Your schedule file is stored locally in this browser. It is never uploaded by this app.</p>
+          <p>Your schedule database is stored locally in this browser. Add PDFs, import JSON, or share a copy with a friend.</p>
         </div>
         <button id="closeScheduleModal" class="modal-close" type="button" aria-label="Close">×</button>
       </div>
 
       <div id="scheduleStorageStatus" class="storage-status"></div>
 
-      <div class="modal-actions">
-        <button id="importSchedulesButton" class="primary-button" type="button">Choose schedules.json</button>
-        <button id="removeSchedulesButton" class="danger-button" type="button">Remove local copy</button>
-      </div>
+      <section class="schedule-action-section" aria-labelledby="addScheduleTitle">
+        <div class="section-kicker">Add people</div>
+        <h3 id="addScheduleTitle">Import a Marianopolis schedule PDF</h3>
+        <p>Select one or more Omnivox schedule PDFs. The person's name and classes are read on this device and added automatically.</p>
+        <button id="addSchedulePdfButton" class="primary-button wide-action" type="button">Add schedule PDF</button>
+        <div id="parserStatus" class="parser-status" aria-live="polite"></div>
+      </section>
 
-      <p class="privacy-footnote">If you clear this browser's website data, switch browsers, or use a different device, you'll need to choose the JSON file again.</p>
+      <section class="schedule-action-section" aria-labelledby="databaseTitle">
+        <div class="section-kicker">Database</div>
+        <h3 id="databaseTitle">Import or share schedules.json</h3>
+        <p>Import a friend's database, or share your complete local database through the system share sheet.</p>
+        <div class="modal-actions database-actions">
+          <button id="importSchedulesButton" class="secondary-button" type="button">Import schedules.json</button>
+          <button id="shareSchedulesButton" class="secondary-button" type="button">Share schedules.json</button>
+        </div>
+      </section>
+
+      <section class="schedule-action-section people-manager-section" aria-labelledby="peopleManagerTitle">
+        <div class="section-kicker">People</div>
+        <div class="people-manager-heading">
+          <h3 id="peopleManagerTitle">Stored on this device</h3>
+          <span id="peopleManagerCount" class="count-badge">0</span>
+        </div>
+        <div id="peopleManagerList" class="people-manager-list"></div>
+      </section>
+
+      <button id="removeSchedulesButton" class="danger-button remove-all-button" type="button">Remove all local schedules</button>
+
+      <p class="privacy-footnote">PDFs and schedule data stay in this browser. PDF parsing loads the pinned PDF.js library only when you add a PDF; the schedule PDF itself is never uploaded by this app.</p>
     </section>
   </div>
 
@@ -115,14 +140,18 @@
 
   <template id="dataSetupTemplate">
     <div class="data-setup">
-      <div class="data-setup-icon" aria-hidden="true">↥</div>
-      <h3 class="data-setup-title">Add your schedules</h3>
-      <p class="data-setup-message">Choose the <strong>schedules.json</strong> file you were sent. A private copy will be saved only in this browser.</p>
-      <button class="primary-button choose-schedules" type="button">Choose schedules.json</button>
-      <p class="local-only-note"><span aria-hidden="true">●</span> Nothing is uploaded to this website.</p>
+      <div class="data-setup-icon" aria-hidden="true">＋</div>
+      <h3 class="data-setup-title">Add your first schedule</h3>
+      <p class="data-setup-message">Start with a Marianopolis Omnivox PDF, or import a <strong>schedules.json</strong> file a friend sent you.</p>
+      <div class="setup-actions">
+        <button class="primary-button add-pdf" type="button">Add schedule PDF</button>
+        <button class="secondary-button choose-schedules" type="button">Import schedules.json</button>
+      </div>
+      <p class="local-only-note"><span aria-hidden="true">●</span> Schedule data stays on this device.</p>
     </div>
   </template>
 
+  <script src="schedule-parser.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>
