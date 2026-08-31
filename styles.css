@@ -1102,3 +1102,179 @@ input[type="time"]:disabled {
     margin-top: -2px;
   }
 }
+
+/* PDF import + sharing manager */
+.schedule-modal {
+  width: min(620px, 100%);
+  max-height: min(82vh, 760px);
+  overflow-y: auto;
+}
+
+.setup-actions {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.setup-actions > button {
+  min-height: 42px;
+}
+
+.schedule-action-section {
+  margin-top: 14px;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--card) 88%, var(--bg));
+}
+
+.schedule-action-section h3 {
+  font-size: 0.98rem;
+  letter-spacing: -0.01em;
+  margin: 3px 0 5px;
+}
+
+.schedule-action-section > p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.48;
+}
+
+.section-kicker {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.wide-action {
+  width: 100%;
+  min-height: 43px;
+}
+
+.parser-status {
+  min-height: 0;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.parser-status:empty {
+  display: none;
+}
+
+.parser-status[data-tone="working"] { color: var(--accent); }
+.parser-status[data-tone="success"] { color: var(--success-text); }
+.parser-status[data-tone="warning"] { color: var(--busy-text); }
+.parser-status[data-tone="error"] { color: color-mix(in srgb, #ef5b5b 78%, var(--text)); }
+
+.database-actions {
+  margin-top: 0;
+}
+
+.database-actions > button {
+  min-height: 40px;
+}
+
+.people-manager-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 3px 0 9px;
+}
+
+.people-manager-heading h3 {
+  margin: 0;
+}
+
+.people-manager-list {
+  display: grid;
+  gap: 7px;
+}
+
+.people-manager-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: var(--input);
+  border: 1px solid var(--border);
+}
+
+.people-manager-copy {
+  min-width: 0;
+}
+
+.people-manager-name {
+  font-size: 0.86rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.people-manager-meta {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.people-manager-empty {
+  margin: 0;
+  padding: 11px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.mini-danger-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 9px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, #e24b4b 42%, var(--border));
+  background: transparent;
+  color: color-mix(in srgb, #ee6262 72%, var(--text));
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.mini-danger-button:hover {
+  background: color-mix(in srgb, #e24b4b 10%, transparent);
+}
+
+.remove-all-button {
+  width: 100%;
+  margin-top: 14px;
+  min-height: 40px;
+}
+
+@media (max-width: 640px) {
+  .schedule-modal {
+    max-height: 86vh;
+  }
+
+  .setup-actions,
+  .database-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .setup-actions > button,
+  .database-actions > button {
+    width: 100%;
+  }
+
+  .people-manager-row {
+    align-items: flex-start;
+  }
+}
