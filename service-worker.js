@@ -1,10 +1,10 @@
-const CACHE_NAME = "whos-free-shell-v3";
+const CACHE_NAME = "whos-free-shell-v4";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./app.js",
-  "./schedule-parser.js",
+  "./styles.css?v=4",
+  "./app.js?v=4",
+  "./schedule-parser.js?v=4",
   "./manifest.webmanifest",
   "./assets/favicon.png",
   "./assets/apple-touch-icon.png",
@@ -33,32 +33,18 @@ self.addEventListener("fetch", event => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // Navigations are network-first so deployed updates appear quickly,
-  // with the cached app shell as an offline fallback.
-  if (request.mode === "navigate") {
-    event.respondWith(
-      fetch(request)
-        .then(response => {
-          if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then(cache => cache.put("./index.html", copy));
-          }
-          return response;
-        })
-        .catch(() => caches.match("./index.html"))
-    );
-    return;
-  }
-
-  // Static app files are cache-first. Schedule data is never requested,
-  // uploaded, or stored in the service-worker cache.
+  // Network-first prevents a newly deployed index.html from being paired with
+  // stale JavaScript from an older service-worker cache. Cached files remain
+  // available as an offline fallback.
   event.respondWith(
-    caches.match(request).then(cached => cached || fetch(request).then(response => {
-      if (response.ok) {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
-      }
-      return response;
-    }))
+    fetch(request)
+      .then(response => {
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(request).then(cached => cached || caches.match("./index.html")))
   );
 });
