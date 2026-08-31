@@ -256,7 +256,17 @@
   }
 
   function chooseSchedulePdf() {
+    // A real file picker must be opened directly from the user's click/tap.
+    // showPicker() is more reliable in Safari/iOS PWAs; click() remains the fallback.
     els.schedulePdfInput.value = "";
+    try {
+      if (typeof els.schedulePdfInput.showPicker === "function") {
+        els.schedulePdfInput.showPicker();
+        return;
+      }
+    } catch (error) {
+      console.warn("showPicker() was unavailable; falling back to click().", error);
+    }
     els.schedulePdfInput.click();
   }
 
@@ -1156,9 +1166,12 @@
   function registerServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
     if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
-    navigator.serviceWorker.register("./service-worker.js").catch(() => {
-      // The app works normally even if PWA caching isn't available.
-    });
+
+    navigator.serviceWorker.register("./service-worker.js?v=4", { updateViaCache: "none" })
+      .then(registration => registration.update())
+      .catch(() => {
+        // The app works normally even if PWA caching isn't available.
+      });
   }
 
   function init() {
