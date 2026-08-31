@@ -16,6 +16,7 @@
     showEveryone: false,
     theme: loadTheme(),
     loadError: null,
+    isParsing: false,
   };
 
   const LOCAL_DB_NAME = "whos-free-local";
@@ -31,10 +32,16 @@
     darkThemeButton: document.getElementById("darkThemeButton"),
     scheduleDataButton: document.getElementById("scheduleDataButton"),
     scheduleFileInput: document.getElementById("scheduleFileInput"),
+    schedulePdfInput: document.getElementById("schedulePdfInput"),
     scheduleModal: document.getElementById("scheduleModal"),
     closeScheduleModal: document.getElementById("closeScheduleModal"),
     scheduleStorageStatus: document.getElementById("scheduleStorageStatus"),
+    addSchedulePdfButton: document.getElementById("addSchedulePdfButton"),
+    parserStatus: document.getElementById("parserStatus"),
     importSchedulesButton: document.getElementById("importSchedulesButton"),
+    shareSchedulesButton: document.getElementById("shareSchedulesButton"),
+    peopleManagerCount: document.getElementById("peopleManagerCount"),
+    peopleManagerList: document.getElementById("peopleManagerList"),
     removeSchedulesButton: document.getElementById("removeSchedulesButton"),
     liveToggle: document.getElementById("liveToggle"),
     daySelect: document.getElementById("daySelect"),
@@ -223,7 +230,7 @@
     els.freeCount.textContent = "Local only";
     els.statusLine.textContent = state.loadError
       ? "Schedule data needs your attention."
-      : "Choose the schedule file once on this device.";
+      : "Add a schedule PDF or import a shared database.";
     els.viewToggleButton.disabled = true;
     els.peopleList.replaceChildren();
 
@@ -237,6 +244,7 @@
     }
 
     fragment.querySelector(".choose-schedules").addEventListener("click", chooseScheduleFile);
+    fragment.querySelector(".add-pdf").addEventListener("click", chooseSchedulePdf);
     els.peopleList.append(fragment);
     renderEmptyDetail();
   }
@@ -245,6 +253,11 @@
     // Clearing the value allows choosing the same file again after replacing it.
     els.scheduleFileInput.value = "";
     els.scheduleFileInput.click();
+  }
+
+  function chooseSchedulePdf() {
+    els.schedulePdfInput.value = "";
+    els.schedulePdfInput.click();
   }
 
   function openLocalDatabase() {
@@ -418,6 +431,151 @@
     }
   }
 
+  function makeCollectionMeta(data, label = "Local schedule collection") {
+    return {
+      filename: label,
+      importedAt: new Date().toISOString(),
+      peopleCount: Object.keys(data.people || {}).length,
+    };
+  }
+
+  async function persistCurrentDatabase(label = "Local schedule collection") {
+    validateData(state.data);
+    const meta = makeCollectionMeta(state.data, label);
+    const record = { data: state.data, meta };
+    let storageWarning = null;
+    try {
+      await saveLocalScheduleRecord(record);
+      await requestPersistentStorage();
+    } catch (error) {
+      storageWarning = error.message;
+    }
+    state.hasData = true;
+    state.scheduleMeta = meta;
+    state.loadError = null;
+    updateScheduleModal();
+    refresh({ preserveScroll: true });
+    return storageWarning;
+  }
+
+  function setParserStatus(message, tone = "") {
+    els.parserStatus.textContent = message || "";
+    els.parserStatus.dataset.tone = tone;
+  }
+
+  async function parsePdfWithNameFallback(file) {
+    try {
+      return await window.WhosFreeParser.parseSchedulePdf(file);
+    } catch (error) {
+      if (error?.code !== "NAME_NOT_FOUND") throw error;
+      const fallback = window.prompt(`Who's schedule is ${file.name}? Enter the student's name:`);
+      if (!fallback?.trim()) throw new Error("The student's name is required to add this schedule.");
+      return window.WhosFreeParser.parseSchedulePdf(file, { nameOverride: fallback.trim() });
+    }
+  }
+
+  async function handleSchedulePdfs(event) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    if (els.scheduleModal.hidden) openScheduleModal();
+
+    if (!window.WhosFreeParser?.parseSchedulePdf) {
+      setParserStatus("The PDF parser did not load. Refresh the page and try again.", "error");
+      event.target.value = "";
+      return;
+    }
+
+    state.isParsing = true;
+    els.addSchedulePdfButton.disabled = true;
+    els.importSchedulesButton.disabled = true;
+    els.shareSchedulesButton.disabled = true;
+    setParserStatus(`Reading ${files.length === 1 ? files[0].name : `${files.length} schedule PDFs`}…`, "working");
+
+    const workingData = state.hasData
+      ? JSON.parse(JSON.stringify(state.data))
+      : { schema_version: 1, people: {} };
+    if (!workingData.schema_version) workingData.schema_version = 1;
+    if (!workingData.people || typeof workingData.people !== "object") workingData.people = {};
+
+    let added = 0;
+    let updated = 0;
+    const failures = [];
+
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      setParserStatus(`Reading ${file.name} (${index + 1} of ${files.length})…`, "working");
+      try {
+        const parsed = await parsePdfWithNameFallback(file);
+        if (Object.prototype.hasOwnProperty.call(workingData.people, parsed.name)) updated += 1;
+        else added += 1;
+        workingData.people[parsed.name] = parsed.person;
+      } catch (error) {
+        failures.push(`${file.name}: ${error.message}`);
+      }
+    }
+
+    if (added || updated) {
+      state.data = workingData;
+      state.selectedPerson = null;
+      const warning = await persistCurrentDatabase("Local schedule collection");
+      const resultParts = [];
+      if (added) resultParts.push(`${added} added`);
+      if (updated) resultParts.push(`${updated} updated`);
+      if (failures.length) resultParts.push(`${failures.length} failed`);
+      setParserStatus(`Done — ${resultParts.join(" · ")}.`, failures.length ? "warning" : "success");
+      showToast(warning || `Schedule database updated: ${resultParts.join(", ")}`);
+    } else {
+      setParserStatus(failures[0] || "No schedules were added.", "error");
+    }
+
+    if (failures.length > 1) {
+      console.warn("Who’s Free? PDF import errors\n" + failures.join("\n"));
+    }
+
+    state.isParsing = false;
+    updateScheduleModal();
+    event.target.value = "";
+  }
+
+  function databaseJsonText() {
+    const data = state.hasData ? state.data : { schema_version: 1, people: {} };
+    return `${JSON.stringify(data, null, 2)}\n`;
+  }
+
+  function downloadDatabaseFile(file) {
+    const url = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "schedules.json";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function shareSchedules() {
+    if (!state.hasData) return;
+    const file = new File([databaseJsonText()], "schedules.json", { type: "application/json" });
+
+    try {
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          title: "Who's Free? schedules",
+          text: "Import this schedules.json into Who's Free?",
+          files: [file],
+        });
+        showToast("Opened the share sheet");
+        return;
+      }
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      // Fall through to a normal file download if the share sheet fails.
+    }
+
+    downloadDatabaseFile(file);
+    showToast("Downloaded schedules.json — send that file to your friend");
+  }
+
   async function handleLocalScheduleFile(event) {
     const [file] = event.target.files || [];
     if (!file) return;
@@ -425,28 +583,33 @@
 
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
-      validateData(data);
+      const imported = JSON.parse(text);
+      validateData(imported);
 
-      const meta = makeScheduleMeta(file, data);
-      const record = { data, meta };
-      let storageWarning = null;
-      try {
-        await saveLocalScheduleRecord(record);
-        await requestPersistentStorage();
-      } catch (error) {
-        storageWarning = error.message;
-      }
+      const existingPeople = hadData ? (state.data.people || {}) : {};
+      const importedPeople = imported.people || {};
+      const duplicateNames = Object.keys(importedPeople).filter(name => Object.prototype.hasOwnProperty.call(existingPeople, name));
 
-      state.data = data;
+      const merged = {
+        schema_version: imported.schema_version || state.data.schema_version || 1,
+        people: {
+          ...existingPeople,
+          ...importedPeople,
+        },
+      };
+      validateData(merged);
+
+      state.data = merged;
       state.hasData = true;
-      state.scheduleMeta = meta;
-      state.loadError = null;
       state.selectedPerson = null;
+      state.loadError = null;
+      const warning = await persistCurrentDatabase(hadData ? "Merged schedule collection" : file.name);
+
       closeScheduleModal();
-      refresh();
       updateScheduleModal();
-      showToast(storageWarning || `Saved ${meta.peopleCount} schedules on this device`);
+      const importedCount = Object.keys(importedPeople).length;
+      const duplicateText = duplicateNames.length ? ` · ${duplicateNames.length} updated` : "";
+      showToast(warning || `Imported ${importedCount} ${importedCount === 1 ? "person" : "people"}${duplicateText}`);
     } catch (error) {
       const message = `That file could not be loaded: ${error.message}`;
       if (hadData) {
@@ -509,34 +672,104 @@
     return `Imported ${date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`;
   }
 
+  async function removePerson(name) {
+    if (!state.hasData || !Object.prototype.hasOwnProperty.call(state.data.people || {}, name)) return;
+    const confirmed = window.confirm(`Remove ${name} from this device?`);
+    if (!confirmed) return;
+
+    delete state.data.people[name];
+    if (state.selectedPerson === name) state.selectedPerson = null;
+
+    const remaining = Object.keys(state.data.people || {}).length;
+    if (remaining === 0) {
+      await deleteLocalScheduleRecord();
+      state.data = { people: {} };
+      state.hasData = false;
+      state.scheduleMeta = null;
+      state.loadError = null;
+      renderDataSetup();
+      updateScheduleModal();
+      showToast(`Removed ${name}`);
+      return;
+    }
+
+    const warning = await persistCurrentDatabase("Local schedule collection");
+    updateScheduleModal();
+    showToast(warning || `Removed ${name}`);
+  }
+
+  function renderPeopleManager() {
+    const names = Object.keys(peopleMap()).sort((a, b) => a.localeCompare(b));
+    els.peopleManagerCount.textContent = String(names.length);
+    els.peopleManagerList.replaceChildren();
+
+    if (!names.length) {
+      const empty = document.createElement("p");
+      empty.className = "people-manager-empty";
+      empty.textContent = "No people added yet.";
+      els.peopleManagerList.append(empty);
+      return;
+    }
+
+    for (const name of names) {
+      const row = document.createElement("div");
+      row.className = "people-manager-row";
+
+      const copy = document.createElement("div");
+      copy.className = "people-manager-copy";
+      const title = document.createElement("div");
+      title.className = "people-manager-name";
+      title.textContent = name;
+      const detail = document.createElement("div");
+      detail.className = "people-manager-meta";
+      const person = peopleMap()[name] || {};
+      detail.textContent = `${Array.isArray(person.classes) ? person.classes.length : 0} class meetings${person.source_file ? ` · ${person.source_file}` : ""}`;
+      copy.append(title, detail);
+
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "mini-danger-button";
+      removeButton.textContent = "Remove";
+      removeButton.setAttribute("aria-label", `Remove ${name}`);
+      removeButton.addEventListener("click", () => removePerson(name));
+
+      row.append(copy, removeButton);
+      els.peopleManagerList.append(row);
+    }
+  }
+
   function updateScheduleModal() {
+    const peopleCount = Object.keys(peopleMap()).length;
+    renderPeopleManager();
+    els.addSchedulePdfButton.disabled = state.isParsing;
+    els.importSchedulesButton.disabled = state.isParsing;
+    els.shareSchedulesButton.disabled = state.isParsing || !state.hasData || peopleCount === 0;
+    els.removeSchedulesButton.disabled = state.isParsing || !state.hasData;
+
     if (state.hasData) {
       const meta = state.scheduleMeta || {};
-      const peopleCount = Object.keys(peopleMap()).length;
       els.scheduleStorageStatus.innerHTML = `
         <div class="storage-status-row">
           <div>
-            <div class="storage-status-label">Stored schedule file</div>
+            <div class="storage-status-label">Local schedule database</div>
             <div class="storage-status-value"></div>
             <div class="storage-status-meta"></div>
           </div>
           <span class="local-badge">On device</span>
         </div>`;
-      els.scheduleStorageStatus.querySelector(".storage-status-value").textContent = meta.filename || "schedules.json";
-      els.scheduleStorageStatus.querySelector(".storage-status-meta").textContent = `${peopleCount} people · ${formatImportedAt(meta.importedAt)}`;
-      els.importSchedulesButton.textContent = "Replace schedules.json";
-      els.removeSchedulesButton.disabled = false;
+      els.scheduleStorageStatus.querySelector(".storage-status-value").textContent = meta.filename || "Local schedule collection";
+      els.scheduleStorageStatus.querySelector(".storage-status-meta").textContent = `${peopleCount} ${peopleCount === 1 ? "person" : "people"} · ${formatImportedAt(meta.importedAt)}`;
+      els.importSchedulesButton.textContent = "Import another schedules.json";
     } else {
       els.scheduleStorageStatus.innerHTML = `
         <div class="storage-status-row">
           <div>
             <div class="storage-status-label">This device</div>
             <div class="storage-status-value">No schedules stored</div>
-            <div class="storage-status-meta">Choose the JSON file you were sent to get started.</div>
+            <div class="storage-status-meta">Add a PDF to create a database automatically, or import schedules.json.</div>
           </div>
         </div>`;
-      els.importSchedulesButton.textContent = "Choose schedules.json";
-      els.removeSchedulesButton.disabled = true;
+      els.importSchedulesButton.textContent = "Import schedules.json";
     }
   }
 
@@ -873,9 +1106,12 @@
     els.darkThemeButton.addEventListener("click", () => applyTheme("dark"));
     els.scheduleDataButton.addEventListener("click", openScheduleModal);
     els.closeScheduleModal.addEventListener("click", closeScheduleModal);
+    els.addSchedulePdfButton.addEventListener("click", chooseSchedulePdf);
     els.importSchedulesButton.addEventListener("click", chooseScheduleFile);
+    els.shareSchedulesButton.addEventListener("click", shareSchedules);
     els.removeSchedulesButton.addEventListener("click", removeSchedules);
     els.scheduleFileInput.addEventListener("change", handleLocalScheduleFile);
+    els.schedulePdfInput.addEventListener("change", handleSchedulePdfs);
 
     els.scheduleModal.addEventListener("click", event => {
       if (event.target === els.scheduleModal) closeScheduleModal();
