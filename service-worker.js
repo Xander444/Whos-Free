@@ -1,9 +1,10 @@
-const CACHE_NAME = "whos-free-shell-v2";
+const CACHE_NAME = "whos-free-shell-v3";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./schedule-parser.js",
   "./manifest.webmanifest",
   "./assets/favicon.png",
   "./assets/apple-touch-icon.png",
