@@ -14,7 +14,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
   <div class="app-shell">
@@ -29,6 +29,7 @@
 
       <div class="header-actions">
         <button id="scheduleDataButton" class="secondary-button header-data-button" type="button" title="Manage schedule data">Schedules</button>
+        <button id="settingsButton" class="secondary-button header-data-button" type="button" title="Open settings">Settings</button>
         <div class="theme-controls" aria-label="Appearance">
           <button id="lightThemeButton" class="icon-button" type="button" aria-label="Use light theme" title="Light theme">☀</button>
           <button id="darkThemeButton" class="icon-button" type="button" aria-label="Use dark theme" title="Dark theme">☾</button>
@@ -86,6 +87,11 @@
         </div>
       </section>
     </main>
+
+    <footer class="creator-credit" aria-label="Creator credit">
+      <span class="creator-dot" aria-hidden="true"></span>
+      <span>Made by Xander Vatch</span>
+    </footer>
   </div>
 
   <input id="scheduleFileInput" class="visually-hidden" type="file" accept=".json,.JSON,application/json">
@@ -136,6 +142,61 @@
     </section>
   </div>
 
+
+  <div id="settingsModal" class="modal-backdrop" hidden>
+    <section class="settings-modal panel" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
+      <div class="modal-header">
+        <div>
+          <h2 id="settingsModalTitle">Settings</h2>
+          <p>Personalize Who's Free? on this device. Notification preferences stay local.</p>
+        </div>
+        <button id="closeSettingsModal" class="modal-close" type="button" aria-label="Close settings">×</button>
+      </div>
+
+      <section class="settings-section notification-settings-section" aria-labelledby="notificationsTitle">
+        <div class="settings-section-heading">
+          <div>
+            <div class="section-kicker">Notifications</div>
+            <h3 id="notificationsTitle">Long break alerts</h3>
+          </div>
+          <label class="switch-control" for="breakNotificationToggle">
+            <input id="breakNotificationToggle" type="checkbox">
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            <span class="visually-hidden">Enable long break notifications</span>
+          </label>
+        </div>
+
+        <p class="settings-description">Get one grouped notification when one or more unmuted friends start a break longer than 10 minutes between classes.</p>
+
+        <div id="notificationPermissionStatus" class="notification-status" aria-live="polite"></div>
+
+        <div class="settings-inline-actions">
+          <button id="testNotificationButton" class="secondary-button" type="button">Send test notification</button>
+        </div>
+
+        <p class="settings-note">Notifications work while Who's Free? is open or running. On iPhone, add the site to your Home Screen for the best notification support.</p>
+      </section>
+
+      <section class="settings-section" aria-labelledby="notificationPeopleTitle">
+        <div class="settings-section-heading people-notification-heading">
+          <div>
+            <div class="section-kicker">People</div>
+            <h3 id="notificationPeopleTitle">Notification bells</h3>
+          </div>
+          <span id="notificationPeopleCount" class="count-badge">0</span>
+        </div>
+        <p class="settings-description">Tap a bell to mute break notifications for that person. Muted people still appear everywhere else in the app.</p>
+        <div id="notificationPeopleList" class="notification-people-list"></div>
+      </section>
+
+      <section class="settings-section appearance-settings-section" aria-labelledby="appearanceTitle">
+        <div class="section-kicker">Appearance</div>
+        <h3 id="appearanceTitle">Theme</h3>
+        <p class="settings-description">You can always switch between light and dark mode using the sun and moon buttons at the top.</p>
+      </section>
+    </section>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <template id="dataSetupTemplate">
@@ -151,7 +212,8 @@
     </div>
   </template>
 
-  <script src="schedule-parser.js?v=5" defer></script>
-  <script src="app.js?v=5" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js" defer></script>
+  <script src="schedule-parser.js?v=6" defer></script>
+  <script src="app.js?v=6" defer></script>
 </body>
 </html>

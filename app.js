@@ -17,6 +17,11 @@
     theme: loadTheme(),
     loadError: null,
     isParsing: false,
+    notificationsEnabled: false,
+    mutedPeople: new Set(),
+    lastPeopleSignature: "",
+    lastDetailPerson: null,
+    lastFreeCountText: "",
   };
 
   const LOCAL_DB_NAME = "whos-free-local";
@@ -24,6 +29,9 @@
   const LOCAL_STORE_NAME = "app";
   const LOCAL_SCHEDULE_KEY = "schedules";
   const LOCAL_STORAGE_FALLBACK_KEY = "whos-free-local-schedules";
+  const NOTIFICATION_SETTINGS_KEY = "whos-free-notification-settings-v1";
+  const NOTIFICATION_HISTORY_KEY = "whos-free-notification-history-v1";
+  const BREAK_THRESHOLD_MINUTES = 10;
 
   const els = {
     root: document.documentElement,
@@ -31,6 +39,7 @@
     lightThemeButton: document.getElementById("lightThemeButton"),
     darkThemeButton: document.getElementById("darkThemeButton"),
     scheduleDataButton: document.getElementById("scheduleDataButton"),
+    settingsButton: document.getElementById("settingsButton"),
     scheduleFileInput: document.getElementById("scheduleFileInput"),
     schedulePdfInput: document.getElementById("schedulePdfInput"),
     scheduleModal: document.getElementById("scheduleModal"),
@@ -43,6 +52,13 @@
     peopleManagerCount: document.getElementById("peopleManagerCount"),
     peopleManagerList: document.getElementById("peopleManagerList"),
     removeSchedulesButton: document.getElementById("removeSchedulesButton"),
+    settingsModal: document.getElementById("settingsModal"),
+    closeSettingsModal: document.getElementById("closeSettingsModal"),
+    breakNotificationToggle: document.getElementById("breakNotificationToggle"),
+    notificationPermissionStatus: document.getElementById("notificationPermissionStatus"),
+    testNotificationButton: document.getElementById("testNotificationButton"),
+    notificationPeopleCount: document.getElementById("notificationPeopleCount"),
+    notificationPeopleList: document.getElementById("notificationPeopleList"),
     liveToggle: document.getElementById("liveToggle"),
     daySelect: document.getElementById("daySelect"),
     timeInput: document.getElementById("timeInput"),
@@ -83,6 +99,408 @@
     els.darkThemeButton.setAttribute("aria-pressed", String(theme === "dark"));
     els.themeMeta.setAttribute("content", theme === "light" ? "#F3F6FA" : "#0A0F18");
     saveTheme(theme);
+  }
+
+
+  function prefersReducedMotion() {
+    return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  function canAnimate() {
+    return Boolean(window.gsap) && !prefersReducedMotion();
+  }
+
+  function animateModalOpen(backdrop, panel) {
+    if (!canAnimate() || !backdrop || !panel) return;
+    window.gsap.killTweensOf([backdrop, panel]);
+    window.gsap.fromTo(backdrop, { opacity: 0 }, { opacity: 1, duration: 0.18, ease: "power1.out" });
+    window.gsap.fromTo(
+      panel,
+      { opacity: 0, y: 8, scale: 0.985 },
+      { opacity: 1, y: 0, scale: 1, duration: 0.24, ease: "power2.out" }
+    );
+  }
+
+  function animateCardsIfNeeded(signature) {
+    if (!canAnimate() || state.lastPeopleSignature === signature) return;
+    const cards = Array.from(els.peopleList.querySelectorAll(".person-card"));
+    if (!cards.length) return;
+    window.gsap.fromTo(
+      cards,
+      { opacity: 0, y: 6 },
+      { opacity: 1, y: 0, duration: 0.24, stagger: 0.025, ease: "power2.out", clearProps: "opacity,transform" }
+    );
+  }
+
+  function animateSelectedCard() {
+    if (!canAnimate()) return;
+    const selected = els.peopleList.querySelector(".person-card.selected");
+    if (!selected) return;
+    window.gsap.fromTo(
+      selected,
+      { scale: 0.992 },
+      { scale: 1, duration: 0.2, ease: "power2.out", clearProps: "transform" }
+    );
+  }
+
+  function animateDetailIfNeeded(name) {
+    if (!canAnimate() || state.lastDetailPerson === name) return;
+    const children = Array.from(els.detailPanel.children);
+    window.gsap.fromTo(
+      children,
+      { opacity: 0, y: 6 },
+      { opacity: 1, y: 0, duration: 0.24, stagger: 0.035, ease: "power2.out", clearProps: "opacity,transform" }
+    );
+    const blocks = Array.from(els.detailPanel.querySelectorAll(".timeline-class"));
+    if (blocks.length) {
+      window.gsap.fromTo(
+        blocks,
+        { scaleX: 0, transformOrigin: "left center" },
+        { scaleX: 1, duration: 0.32, stagger: 0.03, ease: "power2.out", clearProps: "transform" }
+      );
+    }
+  }
+
+  function animateCountIfChanged(nextText) {
+    if (!canAnimate() || state.lastFreeCountText === nextText) return;
+    window.gsap.fromTo(
+      els.freeCount,
+      { scale: 0.96 },
+      { scale: 1, duration: 0.2, ease: "back.out(1.7)", clearProps: "transform" }
+    );
+  }
+
+  function loadNotificationSettings() {
+    try {
+      const raw = localStorage.getItem(NOTIFICATION_SETTINGS_KEY);
+      if (!raw) return { enabled: false, mutedPeople: [] };
+      const parsed = JSON.parse(raw);
+      return {
+        enabled: Boolean(parsed?.enabled),
+        mutedPeople: Array.isArray(parsed?.mutedPeople) ? parsed.mutedPeople.filter(Boolean) : [],
+      };
+    } catch {
+      return { enabled: false, mutedPeople: [] };
+    }
+  }
+
+  function saveNotificationSettings() {
+    try {
+      localStorage.setItem(NOTIFICATION_SETTINGS_KEY, JSON.stringify({
+        enabled: state.notificationsEnabled,
+        mutedPeople: Array.from(state.mutedPeople).sort((a, b) => a.localeCompare(b)),
+      }));
+    } catch {
+      // Notification preferences are best-effort local settings.
+    }
+  }
+
+  function dateKey(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function readNotificationHistory() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(NOTIFICATION_HISTORY_KEY) || "null");
+      if (!parsed || parsed.date !== dateKey() || !Array.isArray(parsed.keys)) {
+        return { date: dateKey(), keys: [] };
+      }
+      return parsed;
+    } catch {
+      return { date: dateKey(), keys: [] };
+    }
+  }
+
+  function writeNotificationHistory(history) {
+    try {
+      localStorage.setItem(NOTIFICATION_HISTORY_KEY, JSON.stringify(history));
+    } catch {
+      // Duplicate prevention is best-effort.
+    }
+  }
+
+  function breakEventsForPerson(name, day) {
+    const classes = classesForDay(name, day);
+    const breaks = [];
+    for (let index = 0; index < classes.length - 1; index += 1) {
+      const current = classes[index];
+      const next = classes[index + 1];
+      const start = toMinutes(current.end);
+      const end = toMinutes(next.start);
+      const duration = end - start;
+      if (duration > BREAK_THRESHOLD_MINUTES) {
+        breaks.push({
+          name,
+          day,
+          start: current.end,
+          end: next.start,
+          duration,
+          afterClass: current,
+          beforeClass: next,
+        });
+      }
+    }
+    return breaks;
+  }
+
+  function groupedBreaksStartingNow(now = new Date()) {
+    if (!state.hasData || !WORK_DAYS.includes(now.toLocaleDateString("en-CA", { weekday: "long" }))) return [];
+    const day = now.toLocaleDateString("en-CA", { weekday: "long" });
+    const nowTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const due = [];
+
+    for (const name of Object.keys(peopleMap())) {
+      if (state.mutedPeople.has(name)) continue;
+      for (const breakEvent of breakEventsForPerson(name, day)) {
+        if (breakEvent.start === nowTime) due.push(breakEvent);
+      }
+    }
+
+    return due;
+  }
+
+  function compactNameList(names) {
+    if (names.length <= 3) {
+      if (names.length === 1) return names[0];
+      if (names.length === 2) return `${names[0]} and ${names[1]}`;
+      return `${names[0]}, ${names[1]} and ${names[2]}`;
+    }
+    return `${names.slice(0, 3).join(", ")} +${names.length - 3} more`;
+  }
+
+  async function showSystemNotification(title, options = {}) {
+    if (!("Notification" in window) || Notification.permission !== "granted") return false;
+
+    try {
+      if ("serviceWorker" in navigator) {
+        const registration = await navigator.serviceWorker.ready;
+        await registration.showNotification(title, options);
+        return true;
+      }
+    } catch {
+      // Fall back to the page-level Notification constructor.
+    }
+
+    try {
+      const notification = new Notification(title, options);
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+      };
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function sendGroupedBreakNotification(breaks) {
+    if (!breaks.length) return;
+
+    const names = breaks.map(item => item.name);
+    const durations = breaks.map(item => item.duration);
+    const minDuration = Math.min(...durations);
+    const maxDuration = Math.max(...durations);
+    const allSameEnd = breaks.every(item => item.end === breaks[0].end);
+
+    const title = breaks.length === 1
+      ? `${breaks[0].name} is on break`
+      : `${breaks.length} friends are on break`;
+
+    let body;
+    if (breaks.length === 1) {
+      body = `Free for ${breaks[0].duration} min · until ${formatTime(breaks[0].end)}`;
+    } else if (allSameEnd) {
+      body = `${compactNameList(names)} · free until ${formatTime(breaks[0].end)}`;
+    } else {
+      const durationText = minDuration === maxDuration ? `${minDuration} min` : `${minDuration}–${maxDuration} min`;
+      body = `${compactNameList(names)} · breaks ${durationText}`;
+    }
+
+    await showSystemNotification(title, {
+      body,
+      icon: "./assets/icon-192.png",
+      badge: "./assets/icon-192.png",
+      tag: `whos-free-break-${dateKey()}-${breaks[0].start}`,
+      data: { url: "./" },
+    });
+  }
+
+  async function checkBreakNotifications() {
+    if (!state.notificationsEnabled || !state.hasData || !("Notification" in window) || Notification.permission !== "granted") return;
+
+    const due = groupedBreaksStartingNow();
+    if (!due.length) return;
+
+    const history = readNotificationHistory();
+    const known = new Set(history.keys);
+    const unseen = due.filter(item => !known.has(`${item.name}|${item.day}|${item.start}|${item.end}`));
+    if (!unseen.length) return;
+
+    await sendGroupedBreakNotification(unseen);
+
+    for (const item of unseen) {
+      known.add(`${item.name}|${item.day}|${item.start}|${item.end}`);
+    }
+    history.date = dateKey();
+    history.keys = Array.from(known);
+    writeNotificationHistory(history);
+  }
+
+  function notificationSupportText() {
+    if (!("Notification" in window)) {
+      return { tone: "error", text: "Notifications are not supported in this browser. On iPhone, add Who's Free? to the Home Screen and open it from there." };
+    }
+    if (Notification.permission === "denied") {
+      return { tone: "error", text: "Notifications are blocked. Re-enable them in your browser or device settings." };
+    }
+    if (Notification.permission === "granted") {
+      return { tone: "success", text: state.notificationsEnabled ? "Break notifications are on." : "Notification permission is ready. Turn alerts on whenever you want." };
+    }
+    return { tone: "neutral", text: "Turn alerts on to let Who's Free? ask for notification permission." };
+  }
+
+  async function handleNotificationToggle() {
+    const requested = els.breakNotificationToggle.checked;
+
+    if (!requested) {
+      state.notificationsEnabled = false;
+      saveNotificationSettings();
+      updateSettingsModal();
+      showToast("Break notifications turned off");
+      return;
+    }
+
+    if (!("Notification" in window)) {
+      state.notificationsEnabled = false;
+      els.breakNotificationToggle.checked = false;
+      updateSettingsModal();
+      showToast("Notifications are not supported here");
+      return;
+    }
+
+    let permission = Notification.permission;
+    if (permission === "default") {
+      try {
+        permission = await Notification.requestPermission();
+      } catch {
+        permission = Notification.permission;
+      }
+    }
+
+    state.notificationsEnabled = permission === "granted";
+    saveNotificationSettings();
+    updateSettingsModal();
+
+    if (state.notificationsEnabled) {
+      showToast("Long break notifications are on");
+      checkBreakNotifications();
+    } else {
+      showToast(permission === "denied" ? "Notifications were blocked" : "Notification permission was not granted");
+    }
+  }
+
+  async function sendTestNotification() {
+    if (!("Notification" in window) || Notification.permission !== "granted") {
+      showToast("Turn notifications on first");
+      return;
+    }
+    const ok = await showSystemNotification("Who's Free? notifications work", {
+      body: "You'll get grouped alerts when friends start breaks longer than 10 minutes.",
+      icon: "./assets/icon-192.png",
+      badge: "./assets/icon-192.png",
+      tag: "whos-free-test",
+      data: { url: "./" },
+    });
+    showToast(ok ? "Test notification sent" : "Could not show a notification");
+  }
+
+  function togglePersonMute(name, button = null) {
+    if (state.mutedPeople.has(name)) state.mutedPeople.delete(name);
+    else state.mutedPeople.add(name);
+    saveNotificationSettings();
+    updateSettingsModal();
+
+    if (canAnimate() && button) {
+      window.gsap.fromTo(button, { scale: 0.84, rotate: -8 }, { scale: 1, rotate: 0, duration: 0.28, ease: "back.out(2)", clearProps: "transform" });
+    }
+  }
+
+  function renderNotificationPeople() {
+    const names = Object.keys(peopleMap()).sort((a, b) => a.localeCompare(b));
+    els.notificationPeopleCount.textContent = String(names.length);
+    els.notificationPeopleList.replaceChildren();
+
+    if (!names.length) {
+      const empty = document.createElement("p");
+      empty.className = "people-manager-empty";
+      empty.textContent = "Add a schedule before choosing notification bells.";
+      els.notificationPeopleList.append(empty);
+      return;
+    }
+
+    for (const name of names) {
+      const muted = state.mutedPeople.has(name);
+      const row = document.createElement("div");
+      row.className = "notification-person-row";
+
+      const copy = document.createElement("div");
+      copy.className = "notification-person-copy";
+
+      const title = document.createElement("div");
+      title.className = "notification-person-name";
+      title.textContent = name;
+
+      const meta = document.createElement("div");
+      meta.className = "notification-person-meta";
+      const longBreaks = WORK_DAYS.reduce((count, day) => count + breakEventsForPerson(name, day).length, 0);
+      meta.textContent = muted
+        ? "Break alerts muted"
+        : `${longBreaks} long break${longBreaks === 1 ? "" : "s"} in the weekly schedule`;
+
+      copy.append(title, meta);
+
+      const bell = document.createElement("button");
+      bell.type = "button";
+      bell.className = `bell-button${muted ? " muted" : ""}`;
+      bell.textContent = muted ? "🔕" : "🔔";
+      bell.setAttribute("aria-pressed", String(muted));
+      bell.setAttribute("aria-label", muted ? `Unmute break notifications for ${name}` : `Mute break notifications for ${name}`);
+      bell.title = muted ? "Unmute break notifications" : "Mute break notifications";
+      bell.addEventListener("click", () => togglePersonMute(name, bell));
+
+      row.append(copy, bell);
+      els.notificationPeopleList.append(row);
+    }
+  }
+
+  function updateSettingsModal() {
+    if (!els.settingsModal) return;
+
+    els.breakNotificationToggle.checked = state.notificationsEnabled;
+    const support = notificationSupportText();
+    els.notificationPermissionStatus.textContent = support.text;
+    els.notificationPermissionStatus.dataset.tone = support.tone;
+    els.testNotificationButton.disabled = !("Notification" in window) || Notification.permission !== "granted";
+
+    renderNotificationPeople();
+  }
+
+  function openSettingsModal() {
+    updateSettingsModal();
+    els.settingsModal.hidden = false;
+    document.body.style.overflow = "hidden";
+    requestAnimationFrame(() => {
+      animateModalOpen(els.settingsModal, els.settingsModal.querySelector(".settings-modal"));
+      els.closeSettingsModal.focus();
+    });
+  }
+
+  function closeSettingsModal() {
+    els.settingsModal.hidden = true;
+    if (els.scheduleModal.hidden) document.body.style.overflow = "";
   }
 
   function toMinutes(hhmm) {
@@ -210,9 +628,30 @@
   function showToast(message) {
     els.toast.textContent = message;
     els.toast.hidden = false;
+    if (canAnimate()) {
+      window.gsap.killTweensOf(els.toast);
+      window.gsap.fromTo(
+        els.toast,
+        { opacity: 0, y: 8, scale: 0.985 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.2, ease: "power2.out", clearProps: "transform" }
+      );
+    }
     window.clearTimeout(showToast.timer);
     showToast.timer = window.setTimeout(() => {
-      els.toast.hidden = true;
+      if (canAnimate()) {
+        window.gsap.to(els.toast, {
+          opacity: 0,
+          y: 5,
+          duration: 0.15,
+          ease: "power1.in",
+          onComplete: () => {
+            els.toast.hidden = true;
+            window.gsap.set(els.toast, { clearProps: "opacity,transform" });
+          },
+        });
+      } else {
+        els.toast.hidden = true;
+      }
     }, 2600);
   }
 
@@ -464,6 +903,7 @@
     state.scheduleMeta = meta;
     state.loadError = null;
     updateScheduleModal();
+    updateSettingsModal();
     refresh({ preserveScroll: true });
     return storageWarning;
   }
@@ -688,6 +1128,8 @@
     if (!confirmed) return;
 
     delete state.data.people[name];
+    state.mutedPeople.delete(name);
+    saveNotificationSettings();
     if (state.selectedPerson === name) state.selectedPerson = null;
 
     const remaining = Object.keys(state.data.people || {}).length;
@@ -699,12 +1141,14 @@
       state.loadError = null;
       renderDataSetup();
       updateScheduleModal();
+      updateSettingsModal();
       showToast(`Removed ${name}`);
       return;
     }
 
     const warning = await persistCurrentDatabase("Local schedule collection");
     updateScheduleModal();
+    updateSettingsModal();
     showToast(warning || `Removed ${name}`);
   }
 
@@ -781,18 +1225,22 @@
         </div>`;
       els.importSchedulesButton.textContent = "Import schedules.json";
     }
+    updateSettingsModal();
   }
 
   function openScheduleModal() {
     updateScheduleModal();
     els.scheduleModal.hidden = false;
     document.body.style.overflow = "hidden";
-    requestAnimationFrame(() => els.closeScheduleModal.focus());
+    requestAnimationFrame(() => {
+      animateModalOpen(els.scheduleModal, els.scheduleModal.querySelector(".schedule-modal"));
+      els.closeScheduleModal.focus();
+    });
   }
 
   function closeScheduleModal() {
     els.scheduleModal.hidden = true;
-    document.body.style.overflow = "";
+    if (els.settingsModal.hidden) document.body.style.overflow = "";
   }
 
   async function removeSchedules() {
@@ -809,6 +1257,7 @@
     closeScheduleModal();
     renderDataSetup();
     updateScheduleModal();
+    updateSettingsModal();
     showToast("Removed local schedule data");
   }
 
@@ -854,6 +1303,7 @@
     button.addEventListener("click", () => {
       state.selectedPerson = name;
       refresh({ preserveScroll: true });
+      animateSelectedCard();
       if (window.matchMedia("(max-width: 880px)").matches) {
         requestAnimationFrame(() => els.detailPanel.scrollIntoView({ behavior: "smooth", block: "start" }));
       }
@@ -863,6 +1313,7 @@
   }
 
   function renderEmptyDetail() {
+    state.lastDetailPerson = null;
     els.detailPanel.innerHTML = `
       <div class="empty-detail">
         <div class="empty-symbol" aria-hidden="true">◎</div>
@@ -1054,6 +1505,9 @@
         els.detailPanel.append(detailCard("Next class", "No upcoming class found", ""));
       }
     }
+
+    animateDetailIfNeeded(name);
+    state.lastDetailPerson = name;
   }
 
   function refresh({ preserveScroll = false } = {}) {
@@ -1080,7 +1534,10 @@
 
     els.peopleHeading.textContent = state.showEveryone ? "Everyone" : state.useLiveTime ? "Free now" : "Free";
     els.viewToggleButton.textContent = state.showEveryone ? "Show only free" : "Show everyone";
-    els.freeCount.textContent = `${free.length} of ${peopleCount} free`;
+    const nextFreeCountText = `${free.length} of ${peopleCount} free`;
+    els.freeCount.textContent = nextFreeCountText;
+    animateCountIfChanged(nextFreeCountText);
+    state.lastFreeCountText = nextFreeCountText;
     els.statusLine.textContent = `${state.useLiveTime ? "Live · " : ""}${day} at ${formatTime(state.selectedTime)} · ${busy.length} in class`;
 
     els.peopleList.replaceChildren();
@@ -1105,6 +1562,13 @@
 
     visible.forEach(name => els.peopleList.append(renderPersonCard(name, day, minute)));
 
+    const peopleSignature = [
+      state.showEveryone ? "all" : "free",
+      ...visible.map(name => `${name}:${currentClass(name, day, minute)?.course_code || (isFree(name, day, minute) ? "free" : "busy")}`),
+    ].join("|");
+    animateCardsIfNeeded(peopleSignature);
+    state.lastPeopleSignature = peopleSignature;
+
     if (preserveScroll) els.peopleList.scrollTop = oldScroll;
 
     if (state.selectedPerson) renderDetail(state.selectedPerson, day, minute);
@@ -1115,7 +1579,11 @@
     els.lightThemeButton.addEventListener("click", () => applyTheme("light"));
     els.darkThemeButton.addEventListener("click", () => applyTheme("dark"));
     els.scheduleDataButton.addEventListener("click", openScheduleModal);
+    els.settingsButton.addEventListener("click", openSettingsModal);
     els.closeScheduleModal.addEventListener("click", closeScheduleModal);
+    els.closeSettingsModal.addEventListener("click", closeSettingsModal);
+    els.breakNotificationToggle.addEventListener("change", handleNotificationToggle);
+    els.testNotificationButton.addEventListener("click", sendTestNotification);
     els.addSchedulePdfButton.addEventListener("click", chooseSchedulePdf);
     els.importSchedulesButton.addEventListener("click", chooseScheduleFile);
     els.shareSchedulesButton.addEventListener("click", shareSchedules);
@@ -1127,8 +1595,14 @@
       if (event.target === els.scheduleModal) closeScheduleModal();
     });
 
+    els.settingsModal.addEventListener("click", event => {
+      if (event.target === els.settingsModal) closeSettingsModal();
+    });
+
     document.addEventListener("keydown", event => {
-      if (event.key === "Escape" && !els.scheduleModal.hidden) closeScheduleModal();
+      if (event.key !== "Escape") return;
+      if (!els.settingsModal.hidden) closeSettingsModal();
+      else if (!els.scheduleModal.hidden) closeScheduleModal();
     });
 
     els.liveToggle.addEventListener("change", () => {
@@ -1160,6 +1634,7 @@
 
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && state.useLiveTime) refresh();
+      if (!document.hidden) checkBreakNotifications();
     });
   }
 
@@ -1167,7 +1642,7 @@
     if (!("serviceWorker" in navigator)) return;
     if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
 
-    navigator.serviceWorker.register("./service-worker.js?v=5", { updateViaCache: "none" })
+    navigator.serviceWorker.register("./service-worker.js?v=6", { updateViaCache: "none" })
       .then(registration => registration.update())
       .catch(() => {
         // The app works normally even if PWA caching isn't available.
@@ -1175,16 +1650,33 @@
   }
 
   function init() {
+    const savedNotificationSettings = loadNotificationSettings();
+    state.notificationsEnabled = savedNotificationSettings.enabled;
+    state.mutedPeople = new Set(savedNotificationSettings.mutedPeople);
+
+    if (!("Notification" in window) || Notification.permission !== "granted") {
+      state.notificationsEnabled = false;
+      saveNotificationSettings();
+    }
+
     applyTheme(state.theme);
     setLiveValues();
     syncLiveControls();
     bindEvents();
     updateScheduleModal();
-    loadSchedulesFromDevice();
+    updateSettingsModal();
     registerServiceWorker();
 
+    loadSchedulesFromDevice().then(() => {
+      updateSettingsModal();
+      checkBreakNotifications();
+    });
+
     window.setInterval(() => {
-      if (state.useLiveTime && !document.hidden && state.hasData && !state.loadError) refresh({ preserveScroll: true });
+      if (state.useLiveTime && !document.hidden && state.hasData && !state.loadError) {
+        refresh({ preserveScroll: true });
+      }
+      checkBreakNotifications();
     }, 15000);
   }
 

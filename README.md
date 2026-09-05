@@ -1,88 +1,81 @@
-# Who's Free? — local-data web app with PDF import
+# Who's Free? — Web App v6
 
-A static, GitHub Pages-friendly version of **Who's Free?**.
+A privacy-first static web app for comparing Marianopolis schedules.
 
-The site itself contains **no student schedule database**. Schedule data is created/imported by the user and saved locally in that browser.
+## What's new in v6
 
-## What this version does
-
-- Same free/busy UI, timeline, current-time mode, manual day/time, Show everyone, and light/dark themes.
-- **Add schedule PDF**: choose one or more standard Marianopolis Omnivox weekly schedule PDFs.
-- The browser parser reads the student's name, class day, start/end time, course, code, section, room, and instructor.
-- If no schedule database exists yet, adding the first PDF automatically creates one.
-- If a database already exists, imported PDFs are added to it. Importing the same student again updates that student's schedule.
-- **Import schedules.json** merges a friend's database into the local one instead of wiping existing people.
-- **Share schedules.json** opens the system share sheet when file sharing is supported (useful on iPhone/iPad). Otherwise it downloads `schedules.json`, which can be sent through Messages/AirDrop/etc.
-- Individual people can be removed from the Schedules manager.
-- All local schedule data is stored in IndexedDB (with localStorage fallback).
+- Long-break notifications for gaps **longer than 10 minutes** between classes.
+- Notifications are grouped when multiple unmuted friends start a break at the same time.
+- Per-person notification bells: **🔔** receives break alerts, **🔕** mutes that person.
+- A dedicated **Settings** panel.
+- Subtle GSAP motion for cards, details, modals, timelines, counters, bells, and toasts.
+- Responsive phone layout with larger touch targets and modal sizing that fits small screens.
+- Small “Made by Xander Vatch” credit at the bottom.
+- Service-worker cache bumped to **v6**.
 
 ## Privacy model
 
-- Do **not** upload `schedules.json` to GitHub.
-- PDFs are read with JavaScript in the browser and are not uploaded by the app.
-- The app's Content Security Policy blocks normal `fetch`/XHR/WebSocket connections (`connect-src 'none'`).
-- PDF parsing lazy-loads a pinned copy of Mozilla PDF.js (`pdfjs-dist@4.10.38`) from jsDelivr only when the user chooses a PDF. That CDN request receives normal web request metadata such as an IP address, but this app never sends the selected PDF or parsed schedule data to it.
-- Sharing `schedules.json` intentionally shares the complete local schedule database with the recipient you choose.
+Schedule PDFs and `schedules.json` stay on the user's device. The app stores the local schedule database in IndexedDB (with a localStorage fallback).
 
-## GitHub Pages deployment
+The hosted GitHub Pages site does **not** need a `schedules.json` file.
 
-Put the **contents of this folder** in the root of your `Whos-Free` repository:
+PDF parsing happens in the browser. PDF.js is loaded from jsDelivr only when a user adds a PDF; the selected PDF itself is not uploaded by the app.
+
+Notification mute preferences are also stored locally and are not included when sharing `schedules.json`.
+
+## Notifications
+
+When enabled, Who's Free? looks for breaks between two classes where:
+
+- the previous class has ended,
+- the next class is later the same day, and
+- the gap is **more than 10 minutes**.
+
+Time before the first class and time after the last class are not treated as breaks.
+
+If several unmuted people start a qualifying break in the same minute, Who's Free? sends one grouped notification instead of several separate notifications.
+
+### Current limitation
+
+This is still a static GitHub Pages app. Break alerts are checked while the app is open/running. A static site cannot reliably wake itself later after the browser/PWA has been fully closed.
+
+On iPhone, users should add Who's Free? to the Home Screen for the best notification support.
+
+## Files to deploy
+
+Upload these to the **root** of the GitHub repository:
 
 ```text
-Whos-Free/
-├── index.html
-├── app.js
-├── schedule-parser.js
-├── styles.css
-├── service-worker.js
-├── manifest.webmanifest
-├── README.md
-└── assets/
+index.html
+app.js
+schedule-parser.js
+styles.css
+service-worker.js
+manifest.webmanifest
+assets/
 ```
 
-In GitHub:
+Do **not** upload `schedules.json`.
 
-1. Open **Settings → Pages**.
-2. Choose **Deploy from a branch**.
-3. Branch: **main**.
-4. Folder: **/ (root)**.
-5. Save.
+GitHub Pages:
 
-Do not include any `schedules.json` file in the repository.
+```text
+Branch: main
+Folder: / (root)
+```
 
-## Using it
+## Updating an existing install
 
-### Start from a PDF
+v6 uses versioned files and `whos-free-shell-v6`, so previous installs should update automatically after the GitHub Pages deployment completes.
 
-1. Open the website.
-2. Click **Add schedule PDF**.
-3. Choose the Omnivox schedule PDF.
-4. The app creates its local database automatically and adds the student.
+If a device still shows an older version, close the page/Home Screen app completely and reopen it. Clearing the site's cached website data is only a last resort.
 
-### Add more people
+## GSAP
 
-Open **Schedules → Add schedule PDF**. Multiple PDFs can be selected at once.
+GSAP 3.13.0 is loaded from jsDelivr and is used only for small UI transitions. The app still works if GSAP fails to load; animation helpers automatically fall back to the non-animated UI.
 
-### Share your database
+Users with **Reduce Motion** enabled do not get the GSAP motion effects.
 
-Open **Schedules → Share schedules.json**.
+## Sharing
 
-- On supported phones/tablets, the normal system share sheet opens and you can choose Messages, AirDrop, Files, etc.
-- If the browser cannot share files directly, `schedules.json` downloads instead. Send that downloaded file to your friend.
-
-Your friend opens **Schedules → Import schedules.json** and selects the file. It merges with the schedules already stored on their device.
-
-## Parser scope
-
-The built-in parser is designed for the standard **Marianopolis College / Omnivox COURSE SCHEDULE** PDF layout used by the existing desktop parser. It intentionally does not try to parse arbitrary calendar PDFs.
-
-The PDF parser uses the first page of the weekly schedule, matching the five weekday columns and the printed timetable time markers. It uses explicit printed class time ranges when present and otherwise matches class blocks to the timetable grid.
-
-## Updating the site
-
-The service-worker cache is currently `whos-free-shell-v3`. If you make significant future frontend changes and users appear stuck on an older installed version, increment that cache name before deploying.
-
-
-## v4 reliability fix
-
-This build uses the native `showPicker()` API when available for PDF selection, with a normal `click()` fallback. It also changes the service worker to network-first caching and versions the main JavaScript/CSS URLs so GitHub Pages updates do not mix new HTML with stale JavaScript.
+The **Share schedules.json** button shares/downloads only the schedule database. Device-specific preferences such as theme, notification settings, muted bells, and notification history are not included.

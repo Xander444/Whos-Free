@@ -1,10 +1,10 @@
-const CACHE_NAME = "whos-free-shell-v5";
+const CACHE_NAME = "whos-free-shell-v6";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=5",
-  "./app.js?v=5",
-  "./schedule-parser.js?v=5",
+  "./styles.css?v=6",
+  "./app.js?v=6",
+  "./schedule-parser.js?v=6",
   "./manifest.webmanifest",
   "./assets/favicon.png",
   "./assets/apple-touch-icon.png",
@@ -46,5 +46,20 @@ self.addEventListener("fetch", event => {
         return response;
       })
       .catch(() => caches.match(request).then(cached => cached || caches.match("./index.html")))
+  );
+});
+
+
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const targetUrl = event.notification?.data?.url || "./";
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then(windowClients => {
+      for (const client of windowClients) {
+        if ("focus" in client) return client.focus();
+      }
+      if (clients.openWindow) return clients.openWindow(targetUrl);
+      return undefined;
+    })
   );
 });
