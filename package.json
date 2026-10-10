@@ -1,0 +1,8 @@
+{
+  "name": "whos-free",
+  "version": "10.1.0",
+  "private": true,
+  "scripts": { "test": "node --test tests/*.test.cjs tests/*.test.mjs" },
+  "engines": { "node": ">=20" },
+  "devDependencies": { "happy-dom": "20.14.6", "pdfjs-dist": "4.10.38" }
+}

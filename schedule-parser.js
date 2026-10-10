@@ -767,7 +767,7 @@
 
         if (minutes(end) <= minutes(start)) continue;
 
-        const item = { day, start, end, ...parsed };
+        const item = { day, start, end, ...parsed, time_source: EXPLICIT_RANGE_RE.test(cell.lines.join("\n")) ? "printed" : "inferred" };
         const key = [day, start, end, item.course_code || "", item.section || ""].join("|");
         if (!seen.has(key)) {
           seen.add(key);
@@ -797,8 +797,14 @@
     const classes = extractClasses(model);
     if (!classes.length) throw new Error("No classes were found. Make sure this is the standard Marianopolis Omnivox weekly schedule PDF.");
 
+    const warnings = [];
+    if (classes.some(item => item.time_source === "inferred")) warnings.push("Check the start and end times against your PDF before saving.");
+    const printedCodes = new Set(model.items.flatMap(item => courseCodeMatches(item.text)));
+    const parsedCodes = new Set(classes.map(item => item.course_code));
+    if ([...printedCodes].some(code => !parsedCodes.has(code))) warnings.push("Some course codes in the PDF were not found in the timetable. Check for missing classes and add them below.");
     return {
       name,
+      warnings,
       person: {
         source_file: filename || "schedule.pdf",
         classes,
@@ -852,3 +858,4 @@
     __test: { parseScheduleModel, parseClassLines, groupTextLines, extractClasses },
   };
 })();
+

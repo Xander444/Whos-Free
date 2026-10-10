@@ -12,20 +12,10 @@
   <meta name="apple-mobile-web-app-title" content="Who's Free?">
   <title>Who's Free?</title>
 
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-1L4Z6JCNVV"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-
-    gtag('config', 'G-1L4Z6JCNVV');
-  </script>
-
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10.1">
 </head>
 <body>
   <div class="app-shell">
@@ -35,14 +25,18 @@
           <span class="brand-dot" aria-hidden="true"></span>
           <h1>Who's Free?</h1>
         </div>
-        <p>Find who's free now, or check any time during the week.</p>
+        <p>Find a friend between classes. Make time together.</p>
       </div>
 
       <div class="header-actions">
+        <button id="planButton" class="primary-button header-data-button" type="button">Find a shared break</button>
         <button id="scheduleDataButton" class="secondary-button header-data-button" type="button" title="Manage schedule data">Schedules</button>
         <button id="settingsButton" class="secondary-button header-data-button" type="button" title="Open settings">Settings</button>
       </div>
     </header>
+
+    <div id="demoBanner" class="notice-banner" hidden><span><strong>Demo mode</strong> · Fictional people. Your saved schedules are separate.</span><button id="exitDemoButton" class="secondary-button compact" type="button">Exit demo</button></div>
+    <div id="updateBanner" class="notice-banner" hidden><span>A new version is ready.</span><button id="updateAppButton" class="secondary-button compact" type="button">Update &amp; reload</button></div>
 
     <section class="control-bar panel" aria-label="Schedule controls">
       <label class="live-control">
@@ -50,6 +44,10 @@
         <span>Use current time</span>
       </label>
 
+      <label class="field-group">
+        <span>Date</span>
+        <input id="dateInput" type="date" aria-label="Date">
+      </label>
       <label class="field-group">
         <span>Day</span>
         <select id="daySelect" aria-label="Day">
@@ -81,12 +79,17 @@
           </div>
         </div>
 
-        <p id="statusLine" class="status-line" aria-live="polite">Checking this device for schedule data…</p>
+        <p id="statusLine" class="status-line" role="status">Checking this device for schedule data…</p>
+        <div class="people-filters">
+          <label class="search-field"><span class="visually-hidden">Search friends</span><input id="peopleSearch" type="search" placeholder="Search friends…" autocomplete="off"></label>
+          <label><span class="visually-hidden">Friend group</span><select id="groupFilter" aria-label="Friend group"><option value="">All friends</option></select></label>
+          <label><span class="visually-hidden">Minimum free time</span><select id="minimumFree" aria-label="Minimum free time"><option value="0">Any break</option><option value="15">15+ minutes</option><option value="30">30+ minutes</option><option value="60">60+ minutes</option></select></label>
+        </div>
 
         <div id="peopleList" class="people-list" role="list" aria-label="People"></div>
       </section>
 
-      <section id="detailPanel" class="detail-panel panel" aria-live="polite">
+      <section id="detailPanel" class="detail-panel panel" aria-label="Friend schedule">
         <div class="empty-detail">
           <div class="empty-symbol" aria-hidden="true">◎</div>
           <h2>Select someone</h2>
@@ -95,9 +98,22 @@
       </section>
     </main>
 
+    <section class="share-invitation panel" aria-labelledby="shareAppTitle">
+      <div class="share-invitation-copy">
+        <h2 id="shareAppTitle">Better with your friends.</h2>
+        <p>Share Who’s Free? with your classmates so you can find a break together.</p>
+        <p id="appShareStatus" class="share-app-status" role="status" hidden></p>
+        <div id="appShareFallback" class="share-app-fallback" hidden>
+          <label for="appShareLink">Copy this link and send it to a friend</label>
+          <input id="appShareLink" type="url" value="https://xander444.github.io/Whos-Free/" readonly spellcheck="false">
+        </div>
+      </div>
+      <button id="shareAppButton" class="secondary-button" type="button">Share Who’s Free?</button>
+    </section>
+
     <footer class="creator-credit" aria-label="Creator credit">
       <span class="creator-dot" aria-hidden="true"></span>
-      <span>Made by Xander Vatch</span>
+      <span>Made by Xander Vatch · v10.1</span>
     </footer>
   </div>
 
@@ -127,10 +143,10 @@
       <section class="schedule-action-section" aria-labelledby="databaseTitle">
         <div class="section-kicker">Database</div>
         <h3 id="databaseTitle">Import or share schedules.json</h3>
-        <p>Import a friend's database, or share your complete local database through the system share sheet.</p>
+        <p>Review a friend's file before merging, or choose whose schedules to share.</p>
         <div class="modal-actions database-actions">
           <button id="importSchedulesButton" class="secondary-button" type="button">Import schedules.json</button>
-          <button id="shareSchedulesButton" class="secondary-button" type="button">Share schedules.json</button>
+          <button id="shareSchedulesButton" class="secondary-button" type="button">Share selected schedules</button>
         </div>
       </section>
 
@@ -195,6 +211,25 @@
         <div id="notificationPeopleList" class="notification-people-list people-preferences-list"></div>
       </section>
 
+      <section class="settings-section" aria-labelledby="groupsTitle">
+        <div class="section-kicker">Friends</div><h3 id="groupsTitle">Your groups</h3>
+        <p class="settings-description">Save a lunch or study group for faster filtering and shared-break searches. Groups stay on this device.</p>
+        <div id="groupsList" class="groups-list"></div>
+        <div class="group-editor">
+          <label>Group name<input id="groupName" type="text" maxlength="40" placeholder="Lunch friends" autocomplete="off"></label>
+          <div id="groupMembers" class="checklist" aria-label="Group members"></div>
+          <button id="saveGroupButton" class="secondary-button" type="button">Save group</button>
+          <p id="groupStatus" class="inline-error" role="status"></p>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="deviceTitle">
+        <div class="section-kicker">This device</div><h3 id="deviceTitle">Keep it handy</h3>
+        <p class="settings-description">A saved schedule describes class time, not whether a friend is on campus or wants to meet. Add commitments and term dates from Schedules → Edit.</p>
+        <div class="settings-inline-actions"><button id="installButton" class="secondary-button" type="button">Add to Home Screen</button><button id="demoButton" class="secondary-button" type="button">Try fictional schedules</button></div>
+        <p id="installInstructions" class="settings-note" hidden>On iPhone: open this site in Safari, tap Share, then Add to Home Screen. On Android: open the browser menu and choose Install app or Add to Home screen.</p>
+      </section>
+
       <section class="settings-section appearance-settings-section" aria-labelledby="appearanceTitle">
         <div class="section-kicker">Themes</div>
         <h3 id="appearanceTitle">Look & feel</h3>
@@ -227,23 +262,68 @@
     </section>
   </div>
 
+  <div id="planModal" class="modal-backdrop" hidden>
+    <section class="feature-modal panel" role="dialog" aria-modal="true" aria-labelledby="planTitle">
+      <div class="modal-header"><div><div class="section-kicker">Make a plan</div><h2 id="planTitle">Find a shared break</h2><p>Choose friends and find a stretch with no saved classes or commitments.</p></div><button class="modal-close" type="button" data-close-dialog aria-label="Close shared-break finder">×</button></div>
+      <label class="standalone-label">Start with a group<select id="planGroup"><option value="">Choose friends below</option></select></label>
+      <div id="planPeople" class="checklist" aria-label="Friends to compare"></div>
+      <div class="form-grid">
+        <label>Starting date<input id="planDate" type="date"></label>
+        <label>Look ahead<select id="planHorizon"><option value="1">One day</option><option value="7" selected>Seven days</option></select></label>
+        <label>From<input id="planStart" type="time" value="08:00"></label>
+        <label>Until<input id="planEnd" type="time" value="18:00"></label>
+        <label>At least<select id="planDuration"><option value="15">15 minutes</option><option value="30" selected>30 minutes</option><option value="60">1 hour</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label>
+      </div>
+      <button id="findBreakButton" class="primary-button wide-action" type="button">Find shared time</button>
+      <p id="planStatus" class="settings-note" role="status"></p><div id="planResults" class="plan-results"></div>
+      <p class="settings-note">Based on saved schedules in this device’s time zone. Dates outside a friend’s saved term are excluded. Confirm the plan with your friends.</p>
+    </section>
+  </div>
+
+  <div id="reviewModal" class="modal-backdrop" hidden>
+    <section class="feature-modal review-modal panel" role="dialog" aria-modal="true" aria-labelledby="reviewTitle">
+      <div class="modal-header"><div><div class="section-kicker">Check before saving</div><h2 id="reviewTitle">Review schedules</h2><p id="reviewIntro">Confirm the names and times, then save. Your current schedules stay intact until you save.</p></div><button class="modal-close" type="button" data-close-dialog aria-label="Cancel schedule review">×</button></div>
+      <div id="reviewPeople" class="review-people"></div>
+      <p id="reviewError" class="inline-error" role="alert"></p>
+      <div class="review-actions"><button id="cancelReviewButton" class="secondary-button" type="button">Cancel</button><button id="saveReviewButton" class="primary-button" type="button">Save reviewed schedules</button></div>
+    </section>
+  </div>
+
+  <div id="shareModal" class="modal-backdrop" hidden>
+    <section class="feature-modal panel" role="dialog" aria-modal="true" aria-labelledby="shareTitle">
+      <div class="modal-header"><div><div class="section-kicker">Choose what to send</div><h2 id="shareTitle">Share schedules</h2><p>Recipients can read the selected people’s full names and class schedules.</p></div><button class="modal-close" type="button" data-close-dialog aria-label="Close sharing">×</button></div>
+      <div class="selection-actions"><button id="shareSelectAll" class="secondary-button compact" type="button">Select all</button><button id="shareSelectNone" class="secondary-button compact" type="button">Clear</button></div>
+      <div id="sharePeople" class="checklist" aria-label="Schedules to share"></div>
+      <label class="analytics-choice"><input id="shareCommitments" type="checkbox"><span>Include personal commitments</span></label>
+      <p class="settings-note">Commitments are excluded unless you choose to include them. Nicknames, groups, pins, source filenames and notification settings stay on this device.</p>
+      <p id="shareSummary" class="settings-description" role="status"></p>
+      <div class="modal-actions"><button id="downloadSelectedButton" class="secondary-button" type="button">Download file</button><button id="shareSelectedButton" class="primary-button" type="button">Share file</button></div>
+    </section>
+  </div>
+
+  <div id="mobileDetailModal" class="modal-backdrop mobile-detail-backdrop" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <template id="dataSetupTemplate">
     <div class="data-setup">
       <div class="data-setup-icon" aria-hidden="true">＋</div>
-      <h3 class="data-setup-title">Add your first schedule</h3>
+      <h3 class="data-setup-title">Your next break, together.</h3>
       <p class="data-setup-message">Start with a Marianopolis Omnivox PDF, or import a <strong>schedules.json</strong> file a friend sent you.</p>
       <div class="setup-actions">
+        <button class="primary-button try-demo" type="button">Try a demo</button>
         <button class="primary-button add-pdf" type="button">Add schedule PDF</button>
         <button class="secondary-button choose-schedules" type="button">Import schedules.json</button>
       </div>
       <p class="local-only-note"><span aria-hidden="true">●</span> Schedule data stays on this device.</p>
+      <details class="import-help"><summary>Where do I find my schedule PDF?</summary><p>In Marianopolis Omnivox, open your class schedule and download the weekly schedule PDF, or use Print → Save as PDF. English and French schedules are supported. Then choose Add schedule PDF here.</p></details>
     </div>
   </template>
 
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js" defer></script>
-  <script src="schedule-parser.js?v=9" defer></script>
-  <script src="app.js?v=9" defer></script>
+  <script src="schedule-core.js?v=10.1" defer></script>
+  <script src="local-store.js?v=10.1" defer></script>
+  <script src="schedule-parser.js?v=10.1" defer></script>
+  <script src="app.js?v=10.1" defer></script>
 </body>
 </html>
+

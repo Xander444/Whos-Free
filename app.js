@@ -275,6 +275,7 @@
   }
 
   function saveNotificationSettings() {
+    if (state.isDemo) return;
     try {
       localStorage.setItem(NOTIFICATION_SETTINGS_KEY, JSON.stringify({
         enabled: state.notificationsEnabled,
@@ -312,44 +313,20 @@
     }
   }
 
-  function breakEventsForPerson(name, day) {
-    const classes = classesForDay(name, day);
-    const breaks = [];
-    for (let index = 0; index < classes.length - 1; index += 1) {
-      const current = classes[index];
-      const next = classes[index + 1];
-      const start = toMinutes(current.end);
-      const end = toMinutes(next.start);
-      const duration = end - start;
-      if (duration > BREAK_THRESHOLD_MINUTES) {
-        breaks.push({
-          name,
-          day,
-          start: current.end,
-          end: next.start,
-          duration,
-          afterClass: current,
-          beforeClass: next,
-        });
-      }
-    }
-    return breaks;
+  function breakEventsForPerson(name, day, date = Core.localDate()) {
+    return Core.breakEvents(peopleMap()[name] || { classes: [] }, day, date, BREAK_THRESHOLD_MINUTES).map(item => ({ ...item, name }));
   }
 
-  function groupedBreaksStartingNow(now = new Date()) {
-    if (!state.hasData || !WORK_DAYS.includes(now.toLocaleDateString("en-CA", { weekday: "long" }))) return [];
-    const day = now.toLocaleDateString("en-CA", { weekday: "long" });
-    const nowTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    const due = [];
-
-    for (const name of Object.keys(peopleMap())) {
-      if (state.mutedPeople.has(name)) continue;
-      for (const breakEvent of breakEventsForPerson(name, day)) {
-        if (breakEvent.start === nowTime) due.push(breakEvent);
-      }
-    }
-
-    return due;
+  function groupedBreaksStartingNow(now = new Date(), since = new Date(now.getTime() - 60000)) {
+    if (!state.hasData || state.isDemo) return [];
+    const date = Core.localDate(now), day = Core.dayForDate(date);
+    const minute = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+    const sameDate = Core.localDate(since) === date;
+    const earlier = sameDate ? since.getHours() * 60 + since.getMinutes() + since.getSeconds() / 60 : -1;
+    const lower = Math.max(earlier, minute - 5);
+    return Object.keys(peopleMap()).filter(name => !state.mutedPeople.has(name)).flatMap(name =>
+      breakEventsForPerson(name, day, date).filter(item => toMinutes(item.start) > lower && toMinutes(item.start) <= minute && toMinutes(item.end) > minute)
+    );
   }
 
   function compactNameList(names) {
@@ -363,27 +340,15 @@
 
   async function showSystemNotification(title, options = {}) {
     if (!("Notification" in window) || Notification.permission !== "granted") return false;
-
     try {
-      if ("serviceWorker" in navigator) {
-        const registration = await navigator.serviceWorker.ready;
-        await registration.showNotification(title, options);
-        return true;
-      }
-    } catch {
-      // Fall back to the page-level Notification constructor.
-    }
-
+      const registration = await navigator.serviceWorker?.getRegistration();
+      if (registration?.active) { await registration.showNotification(title, options); return true; }
+    } catch { /* Fall back to a page notification. */ }
     try {
       const notification = new Notification(title, options);
-      notification.onclick = () => {
-        window.focus();
-        notification.close();
-      };
+      notification.onclick = () => { window.focus(); notification.close(); };
       return true;
-    } catch {
-      return false;
-    }
+    } catch { return false; }
   }
 
   async function sendGroupedBreakNotification(breaks) {
@@ -409,7 +374,7 @@
       body = `${compactNameList(names)} · breaks ${durationText}`;
     }
 
-    await showSystemNotification(title, {
+    return await showSystemNotification(title, {
       body,
       icon: "./assets/icon-192.png",
       badge: "./assets/icon-192.png",
@@ -419,24 +384,24 @@
   }
 
   async function checkBreakNotifications() {
-    if (!state.notificationsEnabled || !state.hasData || !("Notification" in window) || Notification.permission !== "granted") return;
-
-    const due = groupedBreaksStartingNow();
-    if (!due.length) return;
-
-    const history = readNotificationHistory();
-    const known = new Set(history.keys);
-    const unseen = due.filter(item => !known.has(`${item.name}|${item.day}|${item.start}|${item.end}`));
-    if (!unseen.length) return;
-
-    await sendGroupedBreakNotification(unseen);
-
-    for (const item of unseen) {
-      known.add(`${item.name}|${item.day}|${item.start}|${item.end}`);
-    }
-    history.date = dateKey();
-    history.keys = Array.from(known);
-    writeNotificationHistory(history);
+    if (notificationCheckInFlight || state.isDemo || !state.notificationsEnabled || !state.hasData || !("Notification" in window) || Notification.permission !== "granted") return;
+    notificationCheckInFlight = true;
+    const run = async () => {
+      const now = new Date();
+      const due = groupedBreaksStartingNow(now, lastNotificationCheck);
+      const history = readNotificationHistory(), known = new Set(history.keys);
+      const unseen = due.filter(item => !known.has(`${item.name}|${item.day}|${item.start}|${item.end}`));
+      if (!unseen.length) { lastNotificationCheck = now; return; }
+      const sent = await sendGroupedBreakNotification(unseen);
+      if (!sent) return;
+      for (const item of unseen) known.add(`${item.name}|${item.day}|${item.start}|${item.end}`);
+      writeNotificationHistory({ date: dateKey(now), keys: [...known] });
+      lastNotificationCheck = now;
+    };
+    try {
+      if (navigator.locks?.request) await navigator.locks.request("whos-free-notifications", run);
+      else await run();
+    } finally { notificationCheckInFlight = false; }
   }
 
   function notificationSupportText() {
@@ -627,10 +592,11 @@
     if (!els.settingsModal) return;
 
     els.breakNotificationToggle.checked = state.notificationsEnabled;
+    els.breakNotificationToggle.disabled = state.isDemo;
     const support = notificationSupportText();
     els.notificationPermissionStatus.textContent = support.text;
     els.notificationPermissionStatus.dataset.tone = support.tone;
-    els.testNotificationButton.disabled = !("Notification" in window) || Notification.permission !== "granted";
+    els.testNotificationButton.disabled = state.isDemo || !("Notification" in window) || Notification.permission !== "granted";
 
     applyTheme(state.theme);
     applyAccentTheme(state.accentTheme, false);
@@ -638,20 +604,12 @@
   }
 
   function openSettingsModal() {
-    updateSettingsModal();
-    els.settingsModal.hidden = false;
-    document.body.style.overflow = "hidden";
-    requestAnimationFrame(() => {
-      animateModalOpen(els.settingsModal, els.settingsModal.querySelector(".settings-modal"));
-      animateSettingsContent();
-      els.closeSettingsModal.focus();
-    });
+    updateSettingsModal(); renderGroups();
+    showDialog(els.settingsModal);
+    animateSettingsContent();
   }
 
-  function closeSettingsModal() {
-    els.settingsModal.hidden = true;
-    if (els.scheduleModal.hidden) document.body.style.overflow = "";
-  }
+  function closeSettingsModal() { closeDialog(els.settingsModal); }
 
   function toMinutes(hhmm) {
     if (typeof hhmm !== "string" || !/^\d{2}:\d{2}$/.test(hhmm)) return NaN;
@@ -680,7 +638,7 @@
   }
 
   function classLabel(c) {
-    const title = c?.course || c?.course_code || "Class";
+    const title = c?.title || c?.course || c?.course_code || "Class";
     return c?.room ? `${title} · ${c.room}` : title;
   }
 
@@ -708,6 +666,7 @@
   }
 
   function savePeoplePreferences() {
+    if (state.isDemo) return;
     try {
       localStorage.setItem(PEOPLE_PREFERENCES_KEY, JSON.stringify({
         nicknames: state.nicknames,
@@ -769,13 +728,8 @@
     }
   }
 
-  function classesForDay(name, day) {
-    const person = peopleMap()[name] || {};
-    const classes = Array.isArray(person.classes) ? person.classes : [];
-    return classes
-      .filter(c => c && c.day === day && Number.isFinite(toMinutes(c.start)) && Number.isFinite(toMinutes(c.end)))
-      .slice()
-      .sort((a, b) => toMinutes(a.start) - toMinutes(b.start));
+  function classesForDay(name, day, date = state.selectedDate) {
+    return Core.meetings(peopleMap()[name] || { classes: [] }, day, date);
   }
 
   function currentClass(name, day, minute) {
@@ -786,32 +740,24 @@
   }
 
   function isFree(name, day, minute) {
-    if (!WORK_DAYS.includes(day)) return true;
-    return currentClass(name, day, minute) === null;
+    return personAvailability(name, day, minute).status === "free";
   }
 
   function previousClasses(name, day, minute) {
-    if (!WORK_DAYS.includes(day)) return [];
     return classesForDay(name, day).filter(c => toMinutes(c.end) <= minute);
   }
 
   function nextClassToday(name, day, minute) {
-    if (!WORK_DAYS.includes(day)) return null;
     return classesForDay(name, day).find(c => toMinutes(c.start) > minute) || null;
   }
 
   function nextClassInWeek(name, day, minute) {
-    const person = peopleMap()[name] || {};
-    if (!Array.isArray(person.classes) || person.classes.length === 0) return null;
-
     const selectedIndex = ALL_DAYS.indexOf(day);
     if (selectedIndex < 0) return null;
-
-    for (let daysAhead = 0; daysAhead < 8; daysAhead += 1) {
+    for (let daysAhead = 0; daysAhead < 8; daysAhead++) {
+      const date = Core.addDays(state.selectedDate, daysAhead);
       const candidateDay = ALL_DAYS[(selectedIndex + daysAhead) % 7];
-      if (!WORK_DAYS.includes(candidateDay)) continue;
-
-      for (const c of classesForDay(name, candidateDay)) {
+      for (const c of classesForDay(name, candidateDay, date)) {
         if (daysAhead === 0 && toMinutes(c.start) <= minute) continue;
         return { day: candidateDay, classItem: c, daysAhead };
       }
@@ -821,42 +767,50 @@
 
   function setLiveValues() {
     const now = new Date();
-    const day = now.toLocaleDateString("en-CA", { weekday: "long" });
-    state.selectedDay = ALL_DAYS.includes(day) ? day : "Monday";
+    state.selectedDate = Core.localDate(now);
+    state.selectedDay = Core.dayForDate(state.selectedDate);
     state.selectedTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     els.daySelect.value = state.selectedDay;
     els.timeInput.value = state.selectedTime;
+    document.getElementById("dateInput").value = state.selectedDate;
   }
 
   function syncLiveControls() {
     els.liveToggle.checked = state.useLiveTime;
     els.daySelect.disabled = state.useLiveTime;
+    document.getElementById("dateInput").disabled = state.useLiveTime;
     els.timeInput.disabled = state.useLiveTime;
   }
 
   function selectedMoment() {
-    const day = els.daySelect.value;
-    const time = els.timeInput.value;
-    const minute = toMinutes(time);
-    if (!ALL_DAYS.includes(day) || !Number.isFinite(minute)) return null;
-    state.selectedDay = day;
-    state.selectedTime = time;
-    return { day, minute };
+    const date = document.getElementById("dateInput").value;
+    const day = Core.dayForDate(date), time = els.timeInput.value, minute = toMinutes(time);
+    if (!day || !Number.isFinite(minute)) return null;
+    state.selectedDate = date; state.selectedDay = day; state.selectedTime = time;
+    els.daySelect.value = day;
+    return { date, day, minute };
   }
 
   function visiblePeople(day, minute) {
     const people = Object.keys(peopleMap()).sort(comparePeopleNames);
-    const free = people.filter(name => isFree(name, day, minute)).sort(comparePeopleNames);
-    const freeSet = new Set(free);
-    const busy = people.filter(name => !freeSet.has(name)).sort(comparePeopleNames);
-
-    if (!state.showEveryone) return { free, busy, visible: free };
-
-    const pinned = people.filter(name => state.pinnedPeople.has(name));
-    const pinnedSet = new Set(pinned);
-    const remainingFree = free.filter(name => !pinnedSet.has(name));
-    const remainingBusy = busy.filter(name => !pinnedSet.has(name));
-    return { free, busy, visible: [...pinned, ...remainingFree, ...remainingBusy] };
+    const free = people.filter(name => isFree(name, day, minute));
+    const busy = people.filter(name => personAvailability(name, day, minute).status === "busy");
+    const query = document.getElementById("peopleSearch").value.trim().toLocaleLowerCase();
+    const group = groups.find(item => item.id === document.getElementById("groupFilter").value);
+    const minimum = Number(document.getElementById("minimumFree").value);
+    const visible = people.filter(name => {
+      if (query && !`${name} ${displayName(name)}`.toLocaleLowerCase().includes(query)) return false;
+      if (group && !group.members.includes(name)) return false;
+      const availability = personAvailability(name, day, minute);
+      if (availability.status === "free") return availability.duration >= minimum;
+      return state.showEveryone;
+    }).sort((a, b) => {
+      const pin = Number(state.pinnedPeople.has(b)) - Number(state.pinnedPeople.has(a));
+      if (pin) return pin;
+      const rank = name => ({ free: 0, busy: 1, unknown: 2 }[personAvailability(name, day, minute).status]);
+      return rank(a) - rank(b) || comparePeopleNames(a, b);
+    });
+    return { free, busy, visible };
   }
 
   function showToast(message) {
@@ -899,6 +853,12 @@
   }
 
   function renderDataSetup() {
+    if (state.useLiveTime) setLiveValues();
+    syncLiveControls();
+    personNodes.clear(); detailSignature = "empty";
+    document.querySelector(".main-grid").classList.add("no-data");
+    document.querySelector(".people-filters").hidden = true;
+    byId("planButton").disabled = true;
     els.peopleHeading.textContent = "Who's Free?";
     els.freeCount.textContent = "Local only";
     els.statusLine.textContent = state.loadError
@@ -908,6 +868,7 @@
     els.peopleList.replaceChildren();
 
     const fragment = els.dataSetupTemplate.content.cloneNode(true);
+    fragment.querySelector(".try-demo").addEventListener("click", startDemo);
     const title = fragment.querySelector(".data-setup-title");
     const message = fragment.querySelector(".data-setup-message");
 
@@ -1020,83 +981,21 @@
   }
 
   async function readLocalScheduleRecord() {
-    try {
-      const record = await idbGet(LOCAL_SCHEDULE_KEY);
-      state.storageBackend = "indexeddb";
-      return record || null;
-    } catch {
-      try {
-        const record = fallbackRead();
-        state.storageBackend = "localstorage";
-        return record;
-      } catch {
-        state.storageBackend = "memory";
-        return null;
-      }
-    }
+    const result = await deviceStore.read();
+    state.storageBackend = deviceStore.backend;
+    return result;
   }
 
   async function saveLocalScheduleRecord(record) {
-    try {
-      await idbSet(LOCAL_SCHEDULE_KEY, record);
-      state.storageBackend = "indexeddb";
-      return;
-    } catch {
-      try {
-        fallbackWrite(record);
-        state.storageBackend = "localstorage";
-        return;
-      } catch {
-        state.storageBackend = "memory";
-        throw new Error("This browser would not allow the app to save a local copy. The schedules will work until the page is closed, but may need to be selected again later.");
-      }
-    }
+    try { return await deviceStore.save(record); }
+    finally { state.storageBackend = deviceStore.backend; }
   }
 
   async function deleteLocalScheduleRecord() {
-    let removed = false;
-    try {
-      await idbDelete(LOCAL_SCHEDULE_KEY);
-      removed = true;
-    } catch {
-      // Try fallback storage too.
-    }
-    try {
-      fallbackDelete();
-      removed = true;
-    } catch {
-      // Nothing else to remove.
-    }
-    return removed;
+    await deviceStore.remove(); return true;
   }
 
-  function validateData(data) {
-    if (!data || typeof data !== "object" || !data.people || typeof data.people !== "object" || Array.isArray(data.people)) {
-      throw new Error("This JSON does not contain a valid 'people' schedule database.");
-    }
-
-    for (const [name, person] of Object.entries(data.people)) {
-      if (!person || typeof person !== "object") {
-        throw new Error(`The schedule entry for ${name} is not valid.`);
-      }
-      if (person.classes !== undefined && !Array.isArray(person.classes)) {
-        throw new Error(`The classes for ${name} are not in the expected format.`);
-      }
-      for (const classItem of person.classes || []) {
-        if (!classItem || typeof classItem !== "object") {
-          throw new Error(`A class for ${name} is not valid.`);
-        }
-        if (!ALL_DAYS.includes(classItem.day)) {
-          throw new Error(`A class for ${name} has an invalid day.`);
-        }
-        const start = toMinutes(classItem.start);
-        const end = toMinutes(classItem.end);
-        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-          throw new Error(`A class for ${name} has an invalid start or end time.`);
-        }
-      }
-    }
-  }
+  function validateData(data) { Core.normalizeDatabase(data); }
 
   function makeScheduleMeta(file, data) {
     return {
@@ -1123,7 +1022,8 @@
   }
 
   async function persistCurrentDatabase(label = "Local schedule collection") {
-    validateData(state.data);
+    if (state.isDemo) throw new Error("Exit demo mode before saving schedules.");
+    state.data = Core.normalizeDatabase(state.data);
     const meta = makeCollectionMeta(state.data, label);
     const record = { data: state.data, meta };
     let storageWarning = null;
@@ -1160,74 +1060,31 @@
 
   async function handleSchedulePdfs(event) {
     const files = Array.from(event.target.files || []);
-    if (!files.length) return;
+    if (!files.length || state.isParsing) return;
+    if (state.isDemo) { event.target.value = ""; showToast("Exit demo mode before importing schedules"); return; }
     if (els.scheduleModal.hidden) openScheduleModal();
-
-    if (!window.WhosFreeParser?.parseSchedulePdf) {
-      setParserStatus("The PDF parser did not load. Refresh the page and try again.", "error");
-      event.target.value = "";
-      return;
-    }
-
-    state.isParsing = true;
-    els.addSchedulePdfButton.disabled = true;
-    els.importSchedulesButton.disabled = true;
-    els.shareSchedulesButton.disabled = true;
-    setParserStatus(`Reading ${files.length === 1 ? files[0].name : `${files.length} schedule PDFs`}…`, "working");
-
-    const workingData = state.hasData
-      ? JSON.parse(JSON.stringify(state.data))
-      : { schema_version: 1, people: {} };
-    if (!workingData.schema_version) workingData.schema_version = 1;
-    if (!workingData.people || typeof workingData.people !== "object") workingData.people = {};
-
-    let added = 0;
-    let updated = 0;
-    const failures = [];
-
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index];
-      setParserStatus(`Reading ${file.name} (${index + 1} of ${files.length})…`, "working");
-      try {
-        const parsed = await parsePdfWithNameFallback(file);
-        if (Object.prototype.hasOwnProperty.call(workingData.people, parsed.name)) updated += 1;
-        else added += 1;
-        workingData.people[parsed.name] = parsed.person;
-      } catch (error) {
-        failures.push(`${file.name}: ${error.message}`);
+    state.isParsing = true; updateScheduleModal();
+    const entries = [], failures = [];
+    try {
+      if (!window.WhosFreeParser?.parseSchedulePdf) throw new Error("The PDF parser did not load. Refresh and try again.");
+      for (let index = 0; index < files.length; index++) {
+        const file = files[index];
+        setParserStatus(`Reading ${file.name} (${index + 1} of ${files.length})…`, "working");
+        try {
+          if (file.size > 25 * 1024 * 1024) throw new Error("Choose a PDF smaller than 25 MB.");
+          const parsed = await parsePdfWithNameFallback(file);
+          entries.push({ name: Core.cleanName(parsed.name), person: Core.normalizePerson(parsed.person, parsed.name), warnings: parsed.warnings || [], originalName: null });
+        } catch (error) { failures.push(`${file.name}: ${error.message}`); track("app_import_failed", { source: "pdf" }); }
       }
-    }
-
-    if (added || updated) {
-      state.data = workingData;
-      state.selectedPerson = null;
-      const warning = await persistCurrentDatabase("Local schedule collection");
-      const resultParts = [];
-      if (added) resultParts.push(`${added} added`);
-      if (updated) resultParts.push(`${updated} updated`);
-      if (failures.length) resultParts.push(`${failures.length} failed`);
-      setParserStatus(`Done — ${resultParts.join(" · ")}.`, failures.length ? "warning" : "success");
-      showToast(warning || `Schedule database updated: ${resultParts.join(", ")}`);
-    } else {
-      setParserStatus(failures[0] || "No schedules were added.", "error");
-    }
-
-    if (failures.length > 1) {
-      console.warn("Who’s Free? PDF import errors\n" + failures.join("\n"));
-    }
-
-    state.isParsing = false;
-    updateScheduleModal();
-    event.target.value = "";
+      setParserStatus(failures.length ? failures.join("\n") : "Ready to review. Nothing has been saved yet.", failures.length ? "warning" : "success");
+      if (entries.length) beginReview(entries, "pdf", failures);
+      else if (!failures.length) setParserStatus("No schedules were found.", "error");
+    } catch (error) { setParserStatus(error.message, "error"); track("app_import_failed", { source: "pdf" }); }
+    finally { state.isParsing = false; updateScheduleModal(); event.target.value = ""; }
   }
 
-  function databaseJsonText() {
-    const data = state.hasData ? state.data : { schema_version: 1, people: {} };
-    const exportData = {
-      ...data,
-      app_url: APP_URL,
-    };
-    return `${JSON.stringify(exportData, null, 2)}\n`;
+  function databaseJsonText(names = Object.keys(peopleMap()), includeCommitments = false) {
+    return `${JSON.stringify(Core.exportDatabase(state.data, names, { commitments: includeCommitments, appUrl: APP_URL }), null, 2)}\n`;
   }
 
   function downloadDatabaseFile(file) {
@@ -1241,91 +1098,25 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  async function shareSchedules() {
-    if (!state.hasData) return;
-    const file = new File([databaseJsonText()], "schedules.json", { type: "application/json" });
-    const shareText = `Import this schedules.json into Who's Free?\n${APP_URL}`;
-
-    try {
-      if (navigator.share && navigator.canShare?.({ files: [file] })) {
-        try {
-          await navigator.share({
-            title: "Who's Free? schedules",
-            text: shareText,
-            url: APP_URL,
-            files: [file],
-          });
-        } catch (error) {
-          if (error?.name === "AbortError") return;
-          await navigator.share({
-            title: "Who's Free? schedules",
-            text: shareText,
-            files: [file],
-          });
-        }
-        showToast("Opened the share sheet with the app link");
-        return;
-      }
-    } catch (error) {
-      if (error?.name === "AbortError") return;
-    }
-
-    downloadDatabaseFile(file);
-    showToast("Downloaded schedules.json — the Who's Free? link is included in the file");
+  function shareSchedules() {
+    if (!state.hasData || state.isDemo) return;
+    renderChecklist(document.getElementById("sharePeople"), Object.keys(peopleMap()).sort(comparePeopleNames), []);
+    document.getElementById("shareCommitments").checked = false;
+    updateShareSummary(); showDialog(document.getElementById("shareModal"));
   }
 
   async function handleLocalScheduleFile(event) {
     const [file] = event.target.files || [];
-    if (!file) return;
-    const hadData = state.hasData;
-
+    if (!file || state.isParsing) return;
+    if (state.isDemo) { event.target.value = ""; showToast("Exit demo mode before importing schedules"); return; }
     try {
-      const text = await file.text();
-      const imported = JSON.parse(text);
-      validateData(imported);
-
-      const existingPeople = hadData ? (state.data.people || {}) : {};
-      const importedPeople = imported.people || {};
-      const duplicateNames = Object.keys(importedPeople).filter(name => Object.prototype.hasOwnProperty.call(existingPeople, name));
-
-      const merged = {
-        schema_version: imported.schema_version || state.data.schema_version || 1,
-        people: {
-          ...existingPeople,
-          ...importedPeople,
-        },
-      };
-      validateData(merged);
-
-      state.data = merged;
-      state.hasData = true;
-      state.selectedPerson = null;
-      state.loadError = null;
-      const warning = await persistCurrentDatabase(hadData ? "Merged schedule collection" : file.name);
-
-      closeScheduleModal();
-      updateScheduleModal();
-      const importedCount = Object.keys(importedPeople).length;
-      const duplicateText = duplicateNames.length ? ` · ${duplicateNames.length} updated` : "";
-      showToast(warning || `Imported ${importedCount} ${importedCount === 1 ? "person" : "people"}${duplicateText}`);
-    } catch (error) {
-      const message = `That file could not be loaded: ${error.message}`;
-      if (hadData) {
-        state.loadError = null;
-        refresh({ preserveScroll: true });
-        showToast(message);
-      } else {
-        state.hasData = false;
-        state.data = { people: {} };
-        state.scheduleMeta = null;
-        state.loadError = message;
-        renderDataSetup();
-      }
-      updateScheduleModal();
-      openScheduleModal();
-    } finally {
-      event.target.value = "";
-    }
+      if (file.size > 10 * 1024 * 1024) throw new Error("Choose a schedule file smaller than 10 MB.");
+      const imported = Core.normalizeDatabase(JSON.parse(await file.text()));
+      const entries = Object.entries(imported.people).map(([name, person]) => ({ name, person, warnings: [], originalName: null }));
+      if (!entries.length) throw new Error("This file has no schedules to import.");
+      beginReview(entries, "json");
+    } catch (error) { setParserStatus(`Could not import this file: ${error.message}`, "error"); openScheduleModal(); track("app_import_failed", { source: "json" }); }
+    finally { event.target.value = ""; }
   }
 
   async function loadSchedulesFromDevice() {
@@ -1343,7 +1134,7 @@
       }
 
       validateData(record.data);
-      state.data = record.data;
+      state.data = Core.normalizeDatabase(record.data);
       state.hasData = true;
       state.scheduleMeta = record.meta || {
         filename: "schedules.json",
@@ -1371,36 +1162,21 @@
   }
 
   async function removePerson(name) {
-    if (!state.hasData || !Object.prototype.hasOwnProperty.call(state.data.people || {}, name)) return;
-    const confirmed = window.confirm(`Remove ${displayName(name)} from this device?`);
-    if (!confirmed) return;
-
-    delete state.data.people[name];
-    state.mutedPeople.delete(name);
-    state.pinnedPeople.delete(name);
-    delete state.nicknames[name];
-    saveNotificationSettings();
-    savePeoplePreferences();
+    if (!state.hasData || state.isDemo || !Object.hasOwn(peopleMap(), name)) return;
+    const label = displayName(name);
+    if (!window.confirm(`Remove ${label} from this device?`)) return;
+    const people = { ...peopleMap() }; delete people[name];
+    if (!Object.keys(people).length) {
+      try { await deleteLocalScheduleRecord(); } catch (error) { showToast(error.message); return; }
+      state.data = { people: {} }; state.hasData = false; state.scheduleMeta = null; state.loadError = null;
+    } else state.data = { schema_version: 2, people };
+    state.mutedPeople.delete(name); state.pinnedPeople.delete(name); delete state.nicknames[name];
+    saveNotificationSettings(); savePeoplePreferences();
+    groups = groups.map(group => ({ ...group, members: group.members.filter(member => member !== name) })); saveGroups(); syncGroupOptions();
     if (state.selectedPerson === name) state.selectedPerson = null;
-
-    const remaining = Object.keys(state.data.people || {}).length;
-    if (remaining === 0) {
-      await deleteLocalScheduleRecord();
-      state.data = { people: {} };
-      state.hasData = false;
-      state.scheduleMeta = null;
-      state.loadError = null;
-      renderDataSetup();
-      updateScheduleModal();
-      updateSettingsModal();
-      showToast(`Removed ${displayName(name)}`);
-      return;
-    }
-
-    const warning = await persistCurrentDatabase("Local schedule collection");
-    updateScheduleModal();
-    updateSettingsModal();
-    showToast(warning || `Removed ${displayName(name)}`);
+    let warning = null;
+    if (state.hasData) warning = await persistCurrentDatabase("Local schedule collection"); else renderDataSetup();
+    updateScheduleModal(); updateSettingsModal(); showToast(warning || `Removed ${label}`);
   }
 
   function renderPeopleManager() {
@@ -1439,7 +1215,11 @@
       removeButton.setAttribute("aria-label", `Remove ${displayName(name)}`);
       removeButton.addEventListener("click", () => removePerson(name));
 
-      row.append(copy, removeButton);
+      const actions = document.createElement("div"); actions.className = "people-manager-actions";
+      const editButton = makeButton("Edit", "secondary-button compact", () => editPerson(name));
+      editButton.setAttribute("aria-label", `Edit schedule for ${displayName(name)}`);
+      editButton.disabled = state.isDemo || state.isParsing; removeButton.disabled = state.isDemo || state.isParsing;
+      actions.append(editButton, removeButton); row.append(copy, actions);
       els.peopleManagerList.append(row);
     }
   }
@@ -1447,12 +1227,14 @@
   function updateScheduleModal() {
     const peopleCount = Object.keys(peopleMap()).length;
     renderPeopleManager();
-    els.addSchedulePdfButton.disabled = state.isParsing;
-    els.importSchedulesButton.disabled = state.isParsing;
-    els.shareSchedulesButton.disabled = state.isParsing || !state.hasData || peopleCount === 0;
-    els.removeSchedulesButton.disabled = state.isParsing || !state.hasData;
+    els.addSchedulePdfButton.disabled = state.isParsing || state.isDemo;
+    els.importSchedulesButton.disabled = state.isParsing || state.isDemo;
+    els.shareSchedulesButton.disabled = state.isParsing || state.isDemo || !state.hasData || peopleCount === 0;
+    els.removeSchedulesButton.disabled = state.isParsing || state.isDemo || !state.hasData;
 
-    if (state.hasData) {
+    if (state.isDemo) {
+      els.scheduleStorageStatus.innerHTML = '<div class="storage-status-label">Fictional preview</div><div class="storage-status-value">Demo schedules are not saved</div><div class="storage-status-meta">Exit demo to add or manage your own schedules.</div>';
+    } else if (state.hasData) {
       const meta = state.scheduleMeta || {};
       els.scheduleStorageStatus.innerHTML = `
         <div class="storage-status-row">
@@ -1481,26 +1263,17 @@
   }
 
   function openScheduleModal() {
-    updateScheduleModal();
-    els.scheduleModal.hidden = false;
-    document.body.style.overflow = "hidden";
-    requestAnimationFrame(() => {
-      animateModalOpen(els.scheduleModal, els.scheduleModal.querySelector(".schedule-modal"));
-      els.closeScheduleModal.focus();
-    });
+    updateScheduleModal(); showDialog(els.scheduleModal);
   }
 
-  function closeScheduleModal() {
-    els.scheduleModal.hidden = true;
-    if (els.settingsModal.hidden) document.body.style.overflow = "";
-  }
+  function closeScheduleModal() { closeDialog(els.scheduleModal); }
 
   async function removeSchedules() {
     if (!state.hasData) return;
     const confirmed = window.confirm("Remove the schedules stored in this browser? You can add the JSON file again later.");
     if (!confirmed) return;
 
-    await deleteLocalScheduleRecord();
+    try { await deleteLocalScheduleRecord(); } catch (error) { showToast(error.message); return; }
     state.data = { people: {} };
     state.hasData = false;
     state.scheduleMeta = null;
@@ -1514,61 +1287,21 @@
   }
 
   function renderPersonCard(name, day, minute) {
-    const busyClass = currentClass(name, day, minute);
-    const busy = Boolean(busyClass);
-    const selected = name === state.selectedPerson;
-    const pinned = state.pinnedPeople.has(name);
-
     const button = document.createElement("button");
-    button.type = "button";
-    button.className = `person-card${selected ? " selected" : ""}${pinned ? " pinned" : ""}`;
-    button.setAttribute("role", "listitem");
-    button.setAttribute("aria-pressed", String(selected));
-
-    const dot = document.createElement("span");
-    dot.className = `person-status-dot${busy ? " busy" : ""}`;
-    dot.setAttribute("aria-hidden", "true");
-
-    const copy = document.createElement("span");
-    copy.className = "person-copy";
-
-    const personName = document.createElement("span");
-    personName.className = "person-name";
-    personName.textContent = displayName(name);
-    if (pinned) {
-      const pinMark = document.createElement("span");
-      pinMark.className = "person-pin-mark";
-      pinMark.textContent = "📌";
-      pinMark.setAttribute("aria-hidden", "true");
-      personName.append(" ", pinMark);
-    }
-
-    const detail = document.createElement("span");
-    detail.className = "person-detail";
-    if (busy) {
-      detail.textContent = classLabel(busyClass);
-    } else {
-      const next = nextClassToday(name, day, minute);
-      detail.textContent = next ? `Next ${formatTime(next.start)} · ${classLabel(next)}` : "No more classes today";
-    }
-
-    copy.append(personName, detail);
-
-    const badge = document.createElement("span");
-    badge.className = `status-badge ${busy ? "busy" : "free"}`;
-    badge.textContent = busy ? `IN CLASS\nuntil ${formatTime(busyClass.end)}` : "FREE";
-    badge.style.whiteSpace = "pre-line";
-
+    button.type = "button"; button.dataset.person = name;
+    const dot = document.createElement("span"); dot.className = "person-status-dot"; dot.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("span"); copy.className = "person-copy";
+    const title = document.createElement("span"); title.className = "person-name";
+    const detail = document.createElement("span"); detail.className = "person-detail";
+    copy.append(title, detail);
+    const badge = document.createElement("span"); badge.className = "status-badge";
     button.append(dot, copy, badge);
     button.addEventListener("click", () => {
-      state.selectedPerson = name;
-      refresh({ preserveScroll: true });
-      animateSelectedCard();
-      if (window.matchMedia("(max-width: 880px)").matches) {
-        requestAnimationFrame(() => els.detailPanel.scrollIntoView({ behavior: "smooth", block: "start" }));
-      }
+      state.selectedPerson = name; refresh({ preserveScroll: true });
+      track("app_friend_selected");
+      if (window.matchMedia("(max-width: 880px)").matches) openMobileDetail(button);
     });
-
+    updatePersonCard(button, name, day, minute);
     return button;
   }
 
@@ -1684,156 +1417,79 @@
   }
 
   function renderDetail(name, day, minute) {
-    if (!peopleMap()[name]) {
-      state.selectedPerson = null;
-      renderEmptyDetail();
-      return;
-    }
-
-    const current = currentClass(name, day, minute);
-    const busy = Boolean(current);
-    const previous = previousClasses(name, day, minute);
-    const nextToday = nextClassToday(name, day, minute);
-
+    if (!peopleMap()[name]) { state.selectedPerson = null; renderEmptyDetail(); return; }
+    const availability = personAvailability(name, day, minute), events = classesForDay(name, day);
+    const signature = JSON.stringify([name, displayName(name), state.selectedDate, availability.status, availability.current, availability.next, availability.holiday, events, events.filter(item => toMinutes(item.end) <= minute).length]);
+    if (signature === detailSignature) { updateDetailClock(name, day, minute); return; }
+    detailSignature = signature;
     els.detailPanel.replaceChildren();
-
-    const header = document.createElement("div");
-    header.className = "detail-header";
-    const nameEl = document.createElement("h2");
-    nameEl.textContent = displayName(name);
-    const statusRow = document.createElement("div");
-    statusRow.className = "detail-status-row";
-
-    const badge = document.createElement("span");
-    badge.className = `status-badge ${busy ? "busy" : "free"}`;
-    badge.textContent = busy ? "IN CLASS" : "FREE";
-    statusRow.append(badge);
-
-    if (busy) {
-      const until = document.createElement("span");
-      until.className = "until-copy";
-      until.textContent = `until ${formatTime(current.end)}`;
-      statusRow.append(until);
-    }
-
-    header.append(nameEl, statusRow);
+    const header = document.createElement("div"); header.className = "detail-header";
+    const actions = document.createElement("div"); actions.className = "detail-top-actions";
+    const back = makeButton("Back to friends", "secondary-button compact detail-back", closeMobileDetail);
+    const edit = makeButton("Edit schedule", "secondary-button compact", () => editPerson(name)); edit.disabled = state.isDemo;
+    actions.append(back, edit);
+    const title = document.createElement("h2"); title.id = "detailHeading"; title.textContent = displayName(name);
+    const status = document.createElement("p"); status.className = "detail-live-status";
+    header.append(actions, title, status);
     els.detailPanel.append(header, timelineCard(name, day, minute));
-
-    if (busy) {
-      els.detailPanel.append(detailCard(
-        "Current class",
-        `${formatTime(current.start)}–${formatTime(current.end)}`,
-        classLabel(current),
-        "busy"
-      ));
+    const explanation = document.createElement("p"); explanation.className = "availability-note";
+    explanation.textContent = availability.status === "unknown" ? "This date is outside the saved term. Update the schedule before making a plan." : availability.holiday ? "A no-class date is saved. Personal commitments still count." : "Based on saved classes and commitments; confirm whether they’re available to meet.";
+    els.detailPanel.append(explanation);
+    const list = document.createElement("ul"); list.className = "day-meetings"; list.setAttribute("aria-label", "Full day schedule");
+    for (const item of events) {
+      const row = document.createElement("li");
+      const times = document.createElement("strong"); times.textContent = `${formatTime(item.start)}–${formatTime(item.end)}`;
+      const copy = document.createElement("span"); copy.textContent = classLabel(item);
+      const kind = document.createElement("small"); kind.textContent = item.kind === "commitment" ? "Personal commitment" : "Class";
+      row.append(times, copy, kind); list.append(row);
     }
-
-    if (previous.length > 0) {
-      const last = previous[previous.length - 1];
-      els.detailPanel.append(detailCard(
-        "Earlier today",
-        `${previous.length} class${previous.length === 1 ? "" : "es"} finished`,
-        `Last ended at ${formatTime(last.end)}\n${classLabel(last)}`
-      ));
-    } else {
-      els.detailPanel.append(detailCard(
-        "Earlier today",
-        "No classes finished yet",
-        "They haven't had a class end today."
-      ));
-    }
-
-    if (nextToday) {
-      const until = toMinutes(nextToday.start) - minute;
-      const hours = Math.floor(until / 60);
-      const mins = until % 60;
-      const away = hours && mins ? `in ${hours}h ${mins}m` : hours ? `in ${hours}h` : `in ${mins}m`;
-      els.detailPanel.append(detailCard(
-        "Next class",
-        `${formatTime(nextToday.start)}–${formatTime(nextToday.end)}`,
-        `${away}\n${classLabel(nextToday)}`
-      ));
-    } else {
-      const future = nextClassInWeek(name, day, minute);
-      if (future) {
-        const when = future.daysAhead > 0 ? `Next ${future.day}` : future.day;
-        els.detailPanel.append(detailCard(
-          "Next class",
-          "No more classes today",
-          `${when} at ${formatTime(future.classItem.start)}\n${classLabel(future.classItem)}`
-        ));
-      } else {
-        els.detailPanel.append(detailCard("Next class", "No upcoming class found", ""));
-      }
-    }
-
-    animateDetailIfNeeded(name);
-    state.lastDetailPerson = name;
+    if (events.length) els.detailPanel.append(list);
+    else els.detailPanel.append(detailCard("This day", "No saved classes or commitments", ""));
+    const next = availability.next || nextClassInWeek(name, day, minute)?.classItem;
+    if (next) els.detailPanel.append(detailCard("Next saved meeting", `${formatTime(next.start)}–${formatTime(next.end)}`, `${next.day} · ${classLabel(next)}`));
+    updateDetailClock(name, day, minute);
+    animateDetailIfNeeded(name); state.lastDetailPerson = name;
   }
 
   function refresh({ preserveScroll = false } = {}) {
-    if (!state.hasData || state.loadError) {
-      renderDataSetup();
-      return;
-    }
-
+    if (!state.hasData || state.loadError) { renderDataSetup(); return; }
     els.viewToggleButton.disabled = false;
-
+    document.querySelector(".main-grid").classList.remove("no-data");
+    document.querySelector(".people-filters").hidden = false;
     if (state.useLiveTime) setLiveValues();
     syncLiveControls();
-
     const moment = selectedMoment();
-    if (!moment) {
-      showToast("Choose a valid day and time.");
-      return;
-    }
-
-    const { day, minute } = moment;
-    const { free, busy, visible } = visiblePeople(day, minute);
-    const peopleCount = Object.keys(peopleMap()).length;
-    const oldScroll = els.peopleList.scrollTop;
-
-    els.peopleHeading.textContent = state.showEveryone ? "Everyone" : state.useLiveTime ? "Free now" : "Free";
+    if (!moment) { showToast("Choose a valid date and time."); return; }
+    const { day, minute } = moment, { free, busy, visible } = visiblePeople(day, minute);
+    const total = Object.keys(peopleMap()).length, oldScroll = els.peopleList.scrollTop;
+    els.peopleHeading.textContent = state.showEveryone ? "Everyone" : "No class now";
     els.viewToggleButton.textContent = state.showEveryone ? "Show only free" : "Show everyone";
-    const nextFreeCountText = `${free.length} of ${peopleCount} free`;
-    els.freeCount.textContent = nextFreeCountText;
-    animateCountIfChanged(nextFreeCountText);
-    state.lastFreeCountText = nextFreeCountText;
-    els.statusLine.textContent = `${state.useLiveTime ? "Live · " : ""}${day} at ${formatTime(state.selectedTime)} · ${busy.length} in class`;
-
-    els.peopleList.replaceChildren();
-
-    if (peopleCount === 0) {
-      els.peopleList.append(createEmptyList("No people in this file", "Replace the schedule file from the Schedules button."));
-      state.selectedPerson = null;
-      renderEmptyDetail();
-      return;
+    const count = `${free.length} of ${total} free`;
+    if (els.freeCount.textContent !== count) { els.freeCount.textContent = count; animateCountIfChanged(count); }
+    state.lastFreeCountText = count;
+    const summary = `${state.isDemo ? "Demo · " : ""}${state.useLiveTime ? "Live · " : ""}${day}, ${prettyDate(state.selectedDate)} · ${formatTime(state.selectedTime)} · ${busy.length} busy`;
+    if (els.statusLine.textContent !== summary) els.statusLine.textContent = summary;
+    const wanted = new Set(visible);
+    for (const [name, entry] of personNodes) if (!wanted.has(name)) { entry.row.remove(); personNodes.delete(name); }
+    for (const empty of els.peopleList.querySelectorAll(".empty-list, .data-setup")) empty.remove();
+    if (!visible.length) {
+      els.peopleList.replaceChildren(createEmptyList(total ? "No friends match" : "Add a schedule", "Try Show everyone, a shorter break, or another group or time."));
+    } else {
+      visible.forEach((name, index) => {
+        let entry = personNodes.get(name);
+        if (!entry) {
+          const row = document.createElement("div"); row.setAttribute("role", "listitem");
+          const button = renderPersonCard(name, day, minute); row.append(button);
+          entry = { row, button }; personNodes.set(name, entry);
+        } else updatePersonCard(entry.button, name, day, minute);
+        const atPosition = els.peopleList.children[index];
+        if (atPosition !== entry.row) els.peopleList.insertBefore(entry.row, atPosition || null);
+      });
     }
-
-    if (visible.length === 0) {
-      els.peopleList.append(createEmptyList("Nobody is free", "Try another time or choose Show everyone."));
-      state.selectedPerson = null;
-      renderEmptyDetail();
-      return;
-    }
-
-    if (state.selectedPerson && !visible.includes(state.selectedPerson)) {
-      state.selectedPerson = null;
-    }
-
-    visible.forEach(name => els.peopleList.append(renderPersonCard(name, day, minute)));
-
-    const peopleSignature = [
-      state.showEveryone ? "all" : "free",
-      ...visible.map(name => `${name}:${currentClass(name, day, minute)?.course_code || (isFree(name, day, minute) ? "free" : "busy")}`),
-    ].join("|");
-    animateCardsIfNeeded(peopleSignature);
-    state.lastPeopleSignature = peopleSignature;
-
     if (preserveScroll) els.peopleList.scrollTop = oldScroll;
-
-    if (state.selectedPerson) renderDetail(state.selectedPerson, day, minute);
-    else renderEmptyDetail();
+    if (state.selectedPerson && peopleMap()[state.selectedPerson]) renderDetail(state.selectedPerson, day, minute);
+    else if (detailSignature !== "empty") { detailSignature = "empty"; renderEmptyDetail(); }
+    document.getElementById("planButton").disabled = total === 0;
   }
 
   function bindEvents() {
@@ -1871,11 +1527,7 @@
       if (event.target === els.settingsModal) closeSettingsModal();
     });
 
-    document.addEventListener("keydown", event => {
-      if (event.key !== "Escape") return;
-      if (!els.settingsModal.hidden) closeSettingsModal();
-      else if (!els.scheduleModal.hidden) closeScheduleModal();
-    });
+
 
     els.liveToggle.addEventListener("change", () => {
       state.useLiveTime = els.liveToggle.checked;
@@ -1886,13 +1538,14 @@
 
     els.daySelect.addEventListener("change", () => {
       state.selectedDay = els.daySelect.value;
-      state.selectedPerson = null;
+      const date = document.getElementById("dateInput").value || Core.localDate();
+      const delta = ALL_DAYS.indexOf(state.selectedDay) - ALL_DAYS.indexOf(Core.dayForDate(date));
+      document.getElementById("dateInput").value = Core.addDays(date, delta);
       refresh();
     });
 
     els.timeInput.addEventListener("change", () => {
       state.selectedTime = els.timeInput.value;
-      state.selectedPerson = null;
       refresh();
     });
 
@@ -1903,7 +1556,6 @@
 
     els.viewToggleButton.addEventListener("click", () => {
       state.showEveryone = !state.showEveryone;
-      state.selectedPerson = null;
       refresh();
     });
 
@@ -1914,17 +1566,19 @@
   }
 
   function registerServiceWorker() {
-    if (!("serviceWorker" in navigator)) return;
-    if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
-
-    navigator.serviceWorker.register("./service-worker.js?v=8", { updateViaCache: "none" })
-      .then(registration => registration.update())
-      .catch(() => {
-        // The app works normally even if PWA caching isn't available.
-      });
+    if (!("serviceWorker" in navigator) || (location.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(location.hostname))) return;
+    navigator.serviceWorker.register("./service-worker.js?v=10.1", { updateViaCache: "none" }).then(registration => {
+      workerRegistration = registration;
+      const offerUpdate = () => { if (registration.waiting && navigator.serviceWorker.controller) document.getElementById("updateBanner").hidden = false; };
+      offerUpdate();
+      registration.addEventListener("updatefound", () => registration.installing?.addEventListener("statechange", offerUpdate));
+      registration.update().catch(() => {});
+    }).catch(() => {});
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (reloadForUpdate) location.reload(); });
   }
 
   function init() {
+    initFeatures();
     const savedNotificationSettings = loadNotificationSettings();
     state.notificationsEnabled = savedNotificationSettings.enabled;
     state.mutedPeople = new Set(savedNotificationSettings.mutedPeople);
@@ -1950,6 +1604,8 @@
     requestAnimationFrame(animateAppEntrance);
 
     loadSchedulesFromDevice().then(() => {
+      deviceLoaded = true;
+      groups = loadGroups(); syncGroupOptions();
       cleanPeoplePreferences();
       updateSettingsModal();
       checkBreakNotifications();
@@ -1963,5 +1619,444 @@
     }, 15000);
   }
 
+  const Core = window.WhosFreeCore;
+  const deviceStore = window.WhosFreeStorage.createStore({
+    readPrimary: () => idbGet(LOCAL_SCHEDULE_KEY), writePrimary: record => idbSet(LOCAL_SCHEDULE_KEY, record), deletePrimary: () => idbDelete(LOCAL_SCHEDULE_KEY),
+    readFallback: fallbackRead, writeFallback: fallbackWrite, deleteFallback: fallbackDelete,
+  });
+  const personNodes = new Map(), dialogs = [];
+  const detailHome = document.createComment("Friend detail home");
+  const GROUPS_KEY = "whos-free-groups-v1", GA_ID = "G-1L4Z6JCNVV";
+  let detailSignature = "", lastNotificationCheck = new Date(Date.now() - 60000), notificationCheckInFlight = false;
+  let groups = [], editingGroupId = null, demoSnapshot = null, deviceLoaded = false;
+  let reviewEntries = [], reviewSource = "", reviewFailures = [], workerRegistration = null, reloadForUpdate = false;
+  let analyticsLoaded = false, deferredInstallPrompt = null;
+  state.isDemo = false;
+
+  function byId(id) { return document.getElementById(id); }
+  function setText(element, value) { if (element && element.textContent !== value) element.textContent = value; }
+  function makeButton(label, className, handler) {
+    const button = document.createElement("button"); button.type = "button"; button.className = className; button.textContent = label;
+    if (handler) button.addEventListener("click", handler); return button;
+  }
+  function prettyDate(value) {
+    const [y, m, d] = value.split("-").map(Number);
+    return new Date(y, m - 1, d, 12).toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  function durationText(minutes) {
+    const h = Math.floor(minutes / 60), m = minutes % 60;
+    return h && m ? `${h}h ${m}m` : h ? `${h}h` : `${m} min`;
+  }
+  function personAvailability(name, day, minute) { return Core.availability(peopleMap()[name] || { classes: [] }, day, minute, state.selectedDate); }
+  function availabilityCopy(availability) {
+    if (availability.status === "unknown") return "Check term dates";
+    if (availability.status === "busy") return `${availability.current.kind === "commitment" ? "Busy" : "In class"} until ${formatTime(Core.time(availability.until))}`;
+    if (availability.next) return `Free for ${durationText(availability.duration)}`;
+    return availability.holiday ? "No classes today" : availability.hasClasses ? "Done with classes" : "No class today";
+  }
+  function updatePersonCard(button, name, day, minute) {
+    const availability = personAvailability(name, day, minute), selected = name === state.selectedPerson, pinned = state.pinnedPeople.has(name);
+    button.className = `person-card${selected ? " selected" : ""}${pinned ? " pinned" : ""}`;
+    button.setAttribute("aria-pressed", String(selected));
+    button.querySelector(".person-status-dot").className = `person-status-dot${availability.status === "busy" ? " busy" : availability.status === "unknown" ? " unknown" : ""}`;
+    setText(button.querySelector(".person-name"), `${displayName(name)}${pinned ? " 📌" : ""}`);
+    const detail = availability.current ? classLabel(availability.current) : availability.next ? `Next ${formatTime(availability.next.start)} · ${classLabel(availability.next)}` : availability.status === "unknown" ? "Saved schedule does not cover this date" : "No more saved meetings today";
+    setText(button.querySelector(".person-detail"), detail);
+    const badge = button.querySelector(".status-badge");
+    badge.className = `status-badge ${availability.status === "busy" ? "busy" : availability.status === "unknown" ? "unknown" : "free"}`;
+    setText(badge, availabilityCopy(availability));
+  }
+  function updateDetailClock(name, day, minute) {
+    setText(els.detailPanel.querySelector(".detail-live-status"), availabilityCopy(personAvailability(name, day, minute)));
+    const timeline = els.detailPanel.querySelector(".timeline");
+    if (!timeline) return;
+    const classes = classesForDay(name, day);
+    const first = Math.min(...classes.map(c => toMinutes(c.start))), last = Math.max(...classes.map(c => toMinutes(c.end)));
+    const start = Math.max(0, first - 20), end = Math.min(1440, last + 20), span = Math.max(end - start, 60);
+    let marker = timeline.querySelector(".timeline-marker"), label = timeline.querySelector(".timeline-marker-label");
+    if (minute < start || minute > end) { marker?.remove(); label?.remove(); return; }
+    if (!marker) { marker = document.createElement("div"); marker.className = "timeline-marker"; timeline.append(marker); }
+    if (!label) { label = document.createElement("div"); label.className = "timeline-marker-label"; timeline.append(label); }
+    const left = Math.max(0, Math.min(100, (minute - start) / span * 100));
+    marker.style.left = label.style.left = `${left}%`; label.dataset.edge = left < 12 ? "start" : left > 88 ? "end" : "center";
+    setText(label, state.useLiveTime ? "now" : formatTime(state.selectedTime));
+  }
+
+  function showDialog(element, opener = document.activeElement) {
+    if (dialogs.some(item => item.element === element)) return;
+    const previous = dialogs[dialogs.length - 1]; if (previous) previous.element.hidden = true;
+    element.hidden = false;
+    const panel = element.querySelector('[role="dialog"]') || element.firstElementChild;
+    dialogs.push({ element, opener });
+    document.querySelector(".app-shell").inert = true; document.body.style.overflow = "hidden";
+    if (panel) { panel.tabIndex = -1; panel.focus(); animateModalOpen(element, panel); }
+  }
+  function closeDialog(element = dialogs[dialogs.length - 1]?.element) {
+    const current = dialogs[dialogs.length - 1]; if (!current || current.element !== element) return;
+    current.element.hidden = true; dialogs.pop();
+    if (current.element.id === "mobileDetailModal") {
+      detailHome.after(els.detailPanel); els.detailPanel.removeAttribute("role"); els.detailPanel.removeAttribute("aria-modal"); els.detailPanel.removeAttribute("aria-labelledby"); els.detailPanel.removeAttribute("tabindex");
+    }
+    const previous = dialogs[dialogs.length - 1];
+    if (previous) previous.element.hidden = false;
+    else { document.querySelector(".app-shell").inert = false; document.body.style.overflow = ""; }
+    if (current.opener?.isConnected && !current.opener.closest("[hidden]")) current.opener.focus();
+    else if (previous) previous.element.querySelector('[role="dialog"]')?.focus();
+  }
+  function closeAllDialogs() { while (dialogs.length) closeDialog(); }
+  function openMobileDetail(opener) {
+    const modal = byId("mobileDetailModal");
+    modal.append(els.detailPanel); els.detailPanel.setAttribute("role", "dialog"); els.detailPanel.setAttribute("aria-modal", "true"); els.detailPanel.setAttribute("aria-labelledby", "detailHeading");
+    showDialog(modal, opener);
+  }
+  function closeMobileDetail() { closeDialog(byId("mobileDetailModal")); }
+  function trapDialog(event) {
+    const current = dialogs[dialogs.length - 1]; if (!current) return;
+    if (event.key === "Escape") { event.preventDefault(); closeDialog(); return; }
+    if (event.key !== "Tab") return;
+    const controls = [...current.element.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, a[href], [tabindex="0"]')].filter(element => element.getClientRects().length && !element.closest("[hidden]"));
+    const first = controls[0], last = controls[controls.length - 1];
+    if (!first) { event.preventDefault(); return; }
+    if (event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement))) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement))) { event.preventDefault(); first.focus(); }
+  }
+
+  function renderChecklist(container, names, selected = []) {
+    container.replaceChildren();
+    if (!names.length) { const p = document.createElement("p"); p.className = "settings-note"; p.textContent = "Add a schedule first, or try the demo."; container.append(p); return; }
+    for (const name of names) {
+      const label = document.createElement("label"); label.className = "checklist-person";
+      const input = document.createElement("input"); input.type = "checkbox"; input.value = name; input.checked = selected.includes(name);
+      const copy = document.createElement("span"); copy.textContent = displayName(name);
+      label.append(input, copy); container.append(label);
+    }
+  }
+  function checkedNames(container) { return [...container.querySelectorAll('input[type="checkbox"]:checked')].map(input => input.value); }
+  function loadGroups() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(GROUPS_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed.filter(item => item && typeof item.id === "string" && typeof item.name === "string" && Array.isArray(item.members)).slice(0, 50).map(item => ({ id: item.id, name: item.name.slice(0, 40), members: item.members.filter(name => Object.hasOwn(peopleMap(), name)) })) : [];
+    } catch { return []; }
+  }
+  function saveGroups() { if (!state.isDemo) { try { localStorage.setItem(GROUPS_KEY, JSON.stringify(groups)); } catch { showToast("Groups could not be saved on this device"); } } }
+  function syncGroupOptions() {
+    for (const [id, caption] of [["groupFilter", "All friends"], ["planGroup", "Choose friends below"]]) {
+      const select = byId(id), before = select.value;
+      select.replaceChildren(new Option(caption, ""));
+      for (const group of groups) select.append(new Option(group.name, group.id));
+      if ([...select.options].some(option => option.value === before)) select.value = before;
+    }
+  }
+  function renderGroups() {
+    const list = byId("groupsList"); list.replaceChildren();
+    for (const group of groups) {
+      const row = document.createElement("div"); row.className = "saved-group";
+      const name = document.createElement("span"); name.textContent = `${group.name} · ${group.members.length} friends`;
+      const edit = makeButton("Edit", "secondary-button compact", () => { editingGroupId = group.id; byId("groupName").value = group.name; renderChecklist(byId("groupMembers"), Object.keys(peopleMap()).sort(comparePeopleNames), group.members); byId("groupName").focus(); });
+      const remove = makeButton("Remove", "secondary-button compact", () => { groups = groups.filter(item => item.id !== group.id); saveGroups(); syncGroupOptions(); renderGroups(); refresh({ preserveScroll: true }); });
+      edit.setAttribute("aria-label", `Edit group ${group.name}`); remove.setAttribute("aria-label", `Remove group ${group.name}`);
+      row.append(name, edit, remove); list.append(row);
+    }
+    editingGroupId = null; byId("groupName").value = ""; byId("groupStatus").textContent = "";
+    renderChecklist(byId("groupMembers"), Object.keys(peopleMap()).sort(comparePeopleNames));
+  }
+  function saveGroup() {
+    const name = byId("groupName").value.trim(), members = checkedNames(byId("groupMembers"));
+    if (!name || !members.length) { byId("groupStatus").textContent = "Name the group and choose at least one friend."; return; }
+    if (groups.some(group => group.name.toLowerCase() === name.toLowerCase() && group.id !== editingGroupId)) { byId("groupStatus").textContent = "Use a different group name or edit the existing group."; return; }
+    const group = { id: editingGroupId || (crypto.randomUUID?.() || `group-${Date.now()}`), name, members };
+    groups = [...groups.filter(item => item.id !== group.id), group]; saveGroups(); syncGroupOptions(); renderGroups();
+    byId("groupStatus").textContent = "Group saved."; refresh({ preserveScroll: true });
+  }
+  function openPlanner() {
+    if (!state.hasData) { showToast("Try the demo or add schedules first"); return; }
+    syncGroupOptions(); byId("planGroup").value = byId("groupFilter").value;
+    const group = groups.find(item => item.id === byId("planGroup").value);
+    const initial = group?.members || [...state.pinnedPeople];
+    renderChecklist(byId("planPeople"), Object.keys(peopleMap()).sort(comparePeopleNames), initial);
+    byId("planDate").value = state.selectedDate || Core.localDate(); byId("planResults").replaceChildren(); byId("planStatus").textContent = "";
+    showDialog(byId("planModal"));
+  }
+  function findSharedBreaks() {
+    const names = checkedNames(byId("planPeople")), date = byId("planDate").value;
+    const start = toMinutes(byId("planStart").value), end = toMinutes(byId("planEnd").value), duration = Number(byId("planDuration").value);
+    byId("planResults").replaceChildren();
+    if (!names.length || !Core.validDate(date) || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) { byId("planStatus").textContent = "Choose friends, a date, and an end time after the start time."; return; }
+    const dates = Array.from({ length: Number(byId("planHorizon").value) }, (_, i) => Core.addDays(date, i));
+    const results = Core.commonWindows(peopleMap(), names, dates, start, end, duration);
+    const skipped = dates.filter(day => names.some(name => !Core.termActive(peopleMap()[name], day))).length;
+    byId("planStatus").textContent = `${results.length ? `${results.length} shared ${results.length === 1 ? "window" : "windows"}` : "No shared time found. Try different hours or a shorter break."}${skipped ? ` · ${skipped} dates outside a saved term were excluded.` : ""}`;
+    for (const result of results) {
+      const button = makeButton("", "plan-result", () => {
+        state.useLiveTime = false; state.selectedDate = result.date; state.selectedTime = result.start;
+        byId("dateInput").value = result.date; els.timeInput.value = result.start; state.showEveryone = true;
+        byId("peopleSearch").value = ""; byId("groupFilter").value = ""; byId("minimumFree").value = "0";
+        closeAllDialogs(); refresh();
+      });
+      const day = document.createElement("strong"); day.textContent = `${result.day} · ${prettyDate(result.date)}`;
+      const times = document.createElement("span"); times.textContent = `${formatTime(result.start)}–${formatTime(result.end)}`;
+      const length = document.createElement("small"); length.textContent = `${durationText(result.duration)} together · View this time`;
+      button.append(day, times, length); byId("planResults").append(button);
+    }
+    track("app_shared_break_search", { count_bucket: countBucket(names.length) });
+  }
+
+  function startDemo() {
+    if (state.isDemo) { closeAllDialogs(); return; }
+    if (!deviceLoaded) { showToast("Your saved schedules are still loading. Try again in a moment."); return; }
+    demoSnapshot = { data: state.data, hasData: state.hasData, scheduleMeta: state.scheduleMeta, loadError: state.loadError, nicknames: state.nicknames, pinnedPeople: state.pinnedPeople, mutedPeople: state.mutedPeople, notificationsEnabled: state.notificationsEnabled, groups, useLiveTime: state.useLiveTime, selectedDate: state.selectedDate, selectedTime: state.selectedTime, showEveryone: state.showEveryone, selectedPerson: state.selectedPerson };
+    const slots = { Alex: [["08:30", "10:00"], ["11:00", "12:00"], ["13:30", "15:00"]], Jamie: [["09:00", "11:00"], ["13:00", "14:30"]], Sam: [["10:00", "12:15"], ["14:00", "16:00"]], Riley: [["08:00", "09:30"], ["12:45", "14:00"]] };
+    const people = {};
+    for (const [name, times] of Object.entries(slots)) people[name] = { classes: WORK_DAYS.flatMap(day => times.map(([start, end], index) => ({ day, start, end, course: ["Biology", "Calculus", "Literature"][index % 3], room: "Demo room" }))) };
+    state.isDemo = true; state.data = { schema_version: 2, people }; state.hasData = true; state.loadError = null;
+    state.nicknames = {}; state.pinnedPeople = new Set(["Alex"]); state.mutedPeople = new Set();
+    groups = [{ id: "demo-lunch", name: "Lunch friends", members: ["Alex", "Jamie", "Riley"] }];
+    state.useLiveTime = false;
+    const today = Core.localDate(), offset = (7 - ALL_DAYS.indexOf(Core.dayForDate(today))) % 7;
+    state.selectedDate = WORK_DAYS.includes(Core.dayForDate(today)) ? today : Core.addDays(today, offset);
+    state.selectedTime = "12:15"; state.selectedPerson = "Alex"; state.showEveryone = false;
+    byId("dateInput").value = state.selectedDate; els.timeInput.value = state.selectedTime;
+    byId("demoBanner").hidden = false; byId("peopleSearch").value = ""; byId("minimumFree").value = "0";
+    personNodes.clear(); els.peopleList.replaceChildren(); detailSignature = ""; syncGroupOptions(); closeAllDialogs(); refresh(); updateScheduleModal(); track("app_demo_started");
+  }
+  function exitDemo() {
+    if (!demoSnapshot) return;
+    closeAllDialogs();
+    const saved = demoSnapshot; groups = saved.groups; delete saved.groups; Object.assign(state, saved);
+    state.isDemo = false; demoSnapshot = null; byId("demoBanner").hidden = true;
+    byId("dateInput").value = state.selectedDate; els.timeInput.value = state.selectedTime;
+    byId("peopleSearch").value = ""; byId("minimumFree").value = "0"; byId("groupFilter").value = "";
+    personNodes.clear(); els.peopleList.replaceChildren(); detailSignature = ""; syncGroupOptions(); refresh(); updateScheduleModal();
+  }
+
+  function beginReview(entries, source, failures = []) {
+    if (state.isDemo) return;
+    reviewEntries = entries; reviewSource = source; reviewFailures = failures;
+    byId("reviewPeople").replaceChildren(); byId("reviewError").textContent = "";
+    byId("reviewTitle").textContent = source === "edit" ? "Edit schedule" : "Review imported schedules";
+    byId("reviewIntro").textContent = failures.length ? `Review the ${entries.length} schedules that could be read. ${failures.length} files failed; details are listed below.` : "Confirm the names and times, then save. Your current schedules stay intact until you save.";
+    entries.forEach((entry, index) => buildReviewCard(entry, index));
+    if (failures.length) { const p = document.createElement("p"); p.className = "inline-error"; p.textContent = failures.join("\n"); byId("reviewPeople").append(p); }
+    showDialog(byId("reviewModal"));
+  }
+  function editPerson(name) {
+    if (state.isDemo) return;
+    beginReview([{ name, person: JSON.parse(JSON.stringify(peopleMap()[name])), originalName: name, warnings: [] }], "edit");
+  }
+  function labelledInput(labelText, type, value = "") {
+    const label = document.createElement("label"); const text = document.createElement("span"); text.textContent = labelText;
+    const input = document.createElement("input"); input.type = type; input.value = value; if (type === "text") input.maxLength = 200;
+    label.append(text, input); return { label, input };
+  }
+  function buildReviewCard(entry, index) {
+    const card = document.createElement("section"); card.className = "review-person"; card.dataset.reviewIndex = String(index); entry.card = card;
+    const header = document.createElement("div"); header.className = "form-grid";
+    const name = labelledInput("Full name", "text", entry.name); name.input.maxLength = 100; entry.nameInput = name.input; header.append(name.label);
+    const choiceLabel = document.createElement("label"); const choiceTitle = document.createElement("span"); choiceTitle.textContent = "Existing schedule";
+    const choice = document.createElement("select"); choice.append(new Option("Keep existing", "keep"), new Option("Replace with reviewed schedule", "replace"), new Option("Save as another person (rename above)", "copy"));
+    choice.value = entry.originalName ? "replace" : "keep"; choiceLabel.append(choiceTitle, choice); entry.choice = choice; entry.choiceLabel = choiceLabel; header.append(choiceLabel);
+    const collision = document.createElement("p"); collision.className = "review-collision settings-note"; entry.collision = collision;
+    const warning = document.createElement("p"); warning.className = "review-warning"; entry.warning = warning;
+    card.append(header, collision, warning);
+    if (!entry.originalName) {
+      const skipLabel = document.createElement("label"); skipLabel.className = "analytics-choice";
+      const skip = document.createElement("input"); skip.type = "checkbox"; skip.className = "skip-import"; entry.skipInput = skip;
+      const copy = document.createElement("span"); copy.textContent = "Skip this schedule";
+      skipLabel.append(skip, copy); card.append(skipLabel);
+    }
+    if (entry.person.source_file) { const file = document.createElement("p"); file.className = "settings-note"; file.textContent = `Source: ${entry.person.source_file}`; card.append(file); }
+    const term = document.createElement("details"); term.className = "term-editor";
+    const termSummary = document.createElement("summary"); termSummary.textContent = "Term dates & no-class dates (optional)"; term.append(termSummary);
+    const termFields = document.createElement("div"); termFields.className = "form-grid";
+    const start = labelledInput("Term starts", "date", entry.person.term?.start || ""), end = labelledInput("Term ends", "date", entry.person.term?.end || "");
+    const exclusions = labelledInput("No-class dates (YYYY-MM-DD, separated by commas)", "text", (entry.person.excluded_dates || []).join(", ")); exclusions.input.maxLength = 6000;
+    entry.termStart = start.input; entry.termEnd = end.input; entry.exclusions = exclusions.input;
+    termFields.append(start.label, end.label, exclusions.label); term.append(termFields); card.append(term);
+    const preview = document.createElement("div"); preview.className = "week-preview"; preview.setAttribute("aria-label", `Weekly preview for ${entry.name}`); entry.preview = preview; card.append(preview);
+    const heading = document.createElement("h3"); heading.textContent = "Classes";
+    const rows = document.createElement("div"); rows.className = "meeting-editor"; entry.classRows = rows; card.append(heading, rows);
+    for (const item of entry.person.classes) addMeetingRow(entry, item, "class");
+    const add = makeButton("+ Add class", "secondary-button compact", () => { addMeetingRow(entry, { day: state.selectedDay || "Monday", start: "09:00", end: "10:00" }, "class"); updateWeekPreview(entry); }); card.append(add);
+    const commitments = document.createElement("details"); commitments.className = "commitment-editor"; commitments.open = Boolean(entry.person.commitments?.length);
+    const summary = document.createElement("summary"); summary.textContent = "Personal commitments"; commitments.append(summary);
+    const commitmentNote = document.createElement("p"); commitmentNote.className = "settings-note"; commitmentNote.textContent = "Work, study or travel time also blocks availability. Leave Date blank to repeat weekly. Commitments are excluded from sharing by default."; commitments.append(commitmentNote);
+    const commitmentRows = document.createElement("div"); commitmentRows.className = "meeting-editor"; entry.commitmentRows = commitmentRows; commitments.append(commitmentRows);
+    for (const item of entry.person.commitments || []) addMeetingRow(entry, item, "commitment");
+    commitments.append(makeButton("+ Add commitment", "secondary-button compact", () => { addMeetingRow(entry, { day: state.selectedDay || "Monday", start: "12:00", end: "13:00", title: "" }, "commitment"); updateWeekPreview(entry); }));
+    card.append(commitments);
+    const original = document.createElement("details"); original.className = "existing-preview"; entry.originalPreview = original; card.append(original);
+    name.input.addEventListener("input", () => updateReviewCollision(entry)); choice.addEventListener("change", () => updateReviewCollision(entry));
+    for (const input of [entry.termStart, entry.termEnd, entry.exclusions]) input.addEventListener("change", () => updateWeekPreview(entry));
+    byId("reviewPeople").append(card); updateReviewCollision(entry); updateWeekPreview(entry);
+  }
+  function addMeetingRow(entry, item, kind) {
+    const row = document.createElement("div"); row.className = `meeting-row ${kind}`; row.dataset.kind = kind; row.savedItem = item;
+    const dayLabel = document.createElement("label"), dayText = document.createElement("span"), day = document.createElement("select"); dayText.textContent = "Day";
+    ALL_DAYS.forEach(value => day.append(new Option(value, value))); day.value = item.day || "Monday"; day.dataset.field = "day"; dayLabel.append(dayText, day); row.append(dayLabel);
+    for (const [field, title, type, value] of [["start", "Start", "time", item.start || "09:00"], ["end", "End", "time", item.end || "10:00"], [kind === "class" ? "course" : "title", kind === "class" ? "Course" : "Commitment", "text", item.course || item.title || item.course_code || ""]]) {
+      const control = labelledInput(title, type, value); control.input.dataset.field = field; row.append(control.label);
+    }
+    const last = kind === "class" ? labelledInput("Room", "text", item.room || "") : labelledInput("Date (optional)", "date", item.date || "");
+    last.input.dataset.field = kind === "class" ? "room" : "date"; row.append(last.label);
+    const remove = makeButton("×", "row-remove", () => { row.remove(); updateWeekPreview(entry); }); remove.setAttribute("aria-label", `Remove ${kind} ${item.course || item.title || "meeting"}`); row.append(remove);
+    row.addEventListener("change", event => {
+      if (kind === "commitment" && event.target.dataset.field === "date" && event.target.value && Core.validDate(event.target.value)) day.value = Core.dayForDate(event.target.value);
+      updateWeekPreview(entry);
+    });
+    (kind === "class" ? entry.classRows : entry.commitmentRows).append(row);
+  }
+  function readRows(container) {
+    return [...container.children].map(row => {
+      const item = { ...row.savedItem };
+      for (const input of row.querySelectorAll("[data-field]")) {
+        if (input.value) item[input.dataset.field] = input.value.trim();
+        else delete item[input.dataset.field];
+      }
+      return item;
+    });
+  }
+  function reviewedPerson(entry) {
+    const person = { ...entry.person, classes: readRows(entry.classRows), commitments: readRows(entry.commitmentRows), term: { start: entry.termStart.value, end: entry.termEnd.value }, excluded_dates: entry.exclusions.value.split(/[\s,]+/).filter(Boolean) };
+    return Core.normalizePerson(person, Core.cleanName(entry.nameInput.value));
+  }
+  function updateReviewCollision(entry) {
+    const name = entry.nameInput.value.trim(), existing = Object.hasOwn(peopleMap(), name) ? peopleMap()[name] : null;
+    entry.choiceLabel.hidden = !existing && !entry.originalName;
+    entry.collision.textContent = existing ? `${name} is already saved with ${existing.classes.length} class meetings. ${entry.originalName ? "Save changes, keep the original, or rename to make a copy." : "Choose whether to keep it, replace it, or use a different name."}` : "This will add a new person.";
+    entry.originalPreview.hidden = !existing;
+    entry.originalPreview.replaceChildren();
+    if (existing) {
+      const summary = document.createElement("summary"); summary.textContent = "Compare the currently saved schedule"; entry.originalPreview.append(summary);
+      const list = document.createElement("ul"); list.className = "existing-meetings";
+      for (const item of [...existing.classes, ...(existing.commitments || [])]) { const li = document.createElement("li"); li.textContent = `${item.day} · ${formatTime(item.start)}–${formatTime(item.end)} · ${classLabel(item)}`; list.append(li); }
+      entry.originalPreview.append(list);
+    }
+  }
+  function updateWeekPreview(entry) {
+    entry.preview.replaceChildren();
+    try {
+      const person = reviewedPerson(entry);
+      const warnings = [...(entry.warnings || []), ...Core.overlaps(person)];
+      entry.warning.textContent = warnings.join(" "); entry.warning.hidden = !warnings.length;
+      for (const day of ALL_DAYS) {
+        const column = document.createElement("div"); column.className = "week-day";
+        const title = document.createElement("strong"); title.textContent = day.slice(0, 3); column.append(title);
+        const items = [...person.classes, ...(person.commitments || [])].filter(item => item.day === day).sort((a, b) => toMinutes(a.start) - toMinutes(b.start));
+        for (const item of items) {
+          const meeting = document.createElement("div"); meeting.className = `week-meeting${item.title ? " commitment" : ""}`;
+          const times = document.createElement("span"); times.textContent = `${shortTime(item.start)}–${shortTime(item.end)}`;
+          const course = document.createElement("small"); course.textContent = item.title || item.course || item.course_code || "Class";
+          if (item.date) { const date = document.createElement("small"); date.textContent = item.date; meeting.append(date); }
+          meeting.append(times, course); column.append(meeting);
+        }
+        if (!items.length) { const empty = document.createElement("small"); empty.textContent = "No meetings"; column.append(empty); }
+        entry.preview.append(column);
+      }
+    } catch (error) { entry.warning.hidden = false; entry.warning.textContent = error.message; }
+  }
+  async function saveReviewedSchedules() {
+    const button = byId("saveReviewButton"); button.disabled = true; byId("reviewError").textContent = "";
+    try {
+      const entries = reviewEntries.map(entry => {
+        if (entry.skipInput?.checked) return { name: entry.name, originalName: null, action: "keep", person: entry.person };
+        const name = Core.cleanName(entry.nameInput.value), exists = Object.hasOwn(peopleMap(), name);
+        const action = exists || entry.originalName ? entry.choice.value : "add";
+        return { name, originalName: entry.originalName, action, person: action === "keep" ? entry.person : reviewedPerson(entry) };
+      });
+      if (entries.every(entry => entry.action === "keep")) { closeDialog(); showToast("No schedules were changed"); return; }
+      const next = Core.mergeReviewed(peopleMap(), entries);
+      state.data = next; state.selectedPerson = null; detailSignature = "";
+      const warning = await persistCurrentDatabase("Reviewed schedule collection");
+      cleanPeoplePreferences(); groups = groups.map(group => ({ ...group, members: group.members.filter(name => Object.hasOwn(peopleMap(), name)) })); saveGroups(); syncGroupOptions();
+      if (reviewSource !== "edit") track("app_import_succeeded", { source: reviewSource, count_bucket: countBucket(entries.filter(entry => entry.action !== "keep").length) });
+      closeAllDialogs(); refresh(); setParserStatus("", ""); showToast(warning || "Reviewed schedules saved");
+    } catch (error) { byId("reviewError").textContent = error.message; }
+    finally { button.disabled = false; }
+  }
+
+  function updateShareSummary() {
+    const names = checkedNames(byId("sharePeople"));
+    byId("shareSummary").textContent = names.length ? `${names.length} ${names.length === 1 ? "schedule" : "schedules"} selected${byId("shareCommitments").checked ? " · includes personal commitments" : " · class schedules only"}.` : "Choose at least one person to share.";
+    byId("downloadSelectedButton").disabled = byId("shareSelectedButton").disabled = names.length === 0;
+  }
+  async function shareSelected(useShareSheet) {
+    const names = checkedNames(byId("sharePeople")); if (!names.length || state.isDemo) return;
+    const file = new File([databaseJsonText(names, byId("shareCommitments").checked)], "schedules.json", { type: "application/json" });
+    try {
+      if (useShareSheet && navigator.share && navigator.canShare?.({ files: [file] })) {
+        // Keep the file payload simple so iOS and Android share targets agree.
+        await navigator.share({ title: "Who's Free? schedules", text: `Open ${APP_URL} and import this schedule file.`, files: [file] });
+        showToast("Selected schedules shared");
+      } else { downloadDatabaseFile(file); showToast("Downloaded selected schedules"); }
+      track("app_schedules_shared", { count_bucket: countBucket(names.length) });
+    } catch (error) { if (error?.name !== "AbortError") showToast("Sharing did not finish. Try Download file instead."); }
+  }
+  async function shareApp() {
+    const button = byId("shareAppButton"), status = byId("appShareStatus");
+    if (button.disabled) return;
+    button.disabled = true; status.hidden = true; status.textContent = "";
+    byId("appShareFallback").hidden = true;
+    try {
+      if (typeof navigator.share === "function") {
+        try {
+          await navigator.share({ title: "Who's Free?", text: "Find a friend between classes and compare schedules with Who’s Free?", url: APP_URL });
+          status.textContent = "Thanks for spreading the word!"; status.hidden = false;
+          track("app_link_shared"); return;
+        } catch (error) { if (error?.name === "AbortError") return; }
+      }
+      try {
+        if (typeof navigator.clipboard?.writeText !== "function") throw new Error("Clipboard unavailable");
+        await navigator.clipboard.writeText(APP_URL);
+        status.textContent = "Link copied. Send it to a friend!"; status.hidden = false;
+        track("app_link_copied");
+      } catch {
+        status.textContent = "The app link is ready to copy below."; status.hidden = false;
+        byId("appShareFallback").hidden = false;
+        const link = byId("appShareLink"); link.value = APP_URL; link.focus(); link.select();
+      }
+    } finally { button.disabled = false; }
+  }
+  function countBucket(count) { return count === 1 ? "one" : count <= 5 ? "2_to_5" : count <= 20 ? "6_to_20" : "over_20"; }
+  function initializeAnalytics() {
+    if (analyticsLoaded) return;
+    window[`ga-disable-${GA_ID}`] = false;
+    analyticsLoaded = true; window.dataLayer = window.dataLayer || [];
+    window.gtag = function () { window.dataLayer.push(arguments); };
+    window.gtag("js", new Date());
+    window.gtag("config", GA_ID, { send_page_view: true, allow_google_signals: false, allow_ad_personalization_signals: false, page_location: APP_URL, page_title: "Who's Free?", page_referrer: "" });
+    const script = document.createElement("script"); script.async = true; script.src = `https://www.googletagmanager.com/gtag/js?id=${GA_ID}`; document.head.append(script);
+  }
+  function track(event, values = {}) {
+    if (!window.gtag || !["app_demo_started", "app_import_failed", "app_import_succeeded", "app_friend_selected", "app_shared_break_search", "app_schedules_shared", "app_link_shared", "app_link_copied"].includes(event)) return;
+    const payload = { page_location: APP_URL };
+    if (["pdf", "json"].includes(values.source)) payload.source = values.source;
+    if (["one", "2_to_5", "6_to_20", "over_20"].includes(values.count_bucket)) payload.count_bucket = values.count_bucket;
+    window.gtag("event", event, payload);
+  }
+  function initFeatures() {
+    if (!detailHome.parentNode) els.detailPanel.before(detailHome);
+    initializeAnalytics();
+    byId("dateInput").addEventListener("change", () => refresh({ preserveScroll: true }));
+    for (const id of ["peopleSearch", "groupFilter", "minimumFree"]) byId(id).addEventListener(id === "peopleSearch" ? "input" : "change", () => refresh({ preserveScroll: true }));
+    byId("planButton").addEventListener("click", openPlanner); byId("findBreakButton").addEventListener("click", findSharedBreaks);
+    byId("planGroup").addEventListener("change", () => { const group = groups.find(item => item.id === byId("planGroup").value); renderChecklist(byId("planPeople"), Object.keys(peopleMap()).sort(comparePeopleNames), group?.members || []); });
+    byId("saveGroupButton").addEventListener("click", saveGroup);
+    byId("demoButton").addEventListener("click", startDemo); byId("exitDemoButton").addEventListener("click", exitDemo);
+    byId("saveReviewButton").addEventListener("click", saveReviewedSchedules); byId("cancelReviewButton").addEventListener("click", () => closeDialog());
+    byId("sharePeople").addEventListener("change", updateShareSummary); byId("shareCommitments").addEventListener("change", updateShareSummary);
+    for (const [id, checked] of [["shareSelectAll", true], ["shareSelectNone", false]]) byId(id).addEventListener("click", () => { for (const input of byId("sharePeople").querySelectorAll("input")) input.checked = checked; updateShareSummary(); });
+    byId("shareSelectedButton").addEventListener("click", () => shareSelected(true)); byId("downloadSelectedButton").addEventListener("click", () => shareSelected(false));
+    byId("shareAppButton").addEventListener("click", shareApp);
+    document.addEventListener("keydown", trapDialog);
+    document.querySelectorAll("[data-close-dialog]").forEach(button => button.addEventListener("click", () => closeDialog()));
+    for (const id of ["planModal", "shareModal", "reviewModal", "mobileDetailModal"]) byId(id).addEventListener("click", event => { if (event.target === byId(id)) closeDialog(); });
+    window.addEventListener("beforeinstallprompt", event => { event.preventDefault(); deferredInstallPrompt = event; });
+    byId("installButton").addEventListener("click", async () => { if (deferredInstallPrompt) { const prompt = deferredInstallPrompt; deferredInstallPrompt = null; await prompt.prompt(); } else byId("installInstructions").hidden = false; });
+    byId("updateAppButton").addEventListener("click", () => { if (!workerRegistration?.waiting) return; reloadForUpdate = true; workerRegistration.waiting.postMessage({ type: "SKIP_WAITING" }); });
+    window.addEventListener("resize", () => { if (!window.matchMedia("(max-width: 880px)").matches && dialogs[dialogs.length - 1]?.element.id === "mobileDetailModal") closeMobileDetail(); });
+  }
+
+
   init();
 })();
+
